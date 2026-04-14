@@ -1,11 +1,9 @@
+import { ClaudeClient, FailureReportBuilder } from '@self-healing-ci/claude';
 import { log } from '@temporalio/activity';
-import type {
-  ClaudeInput,
-  ClaudeResult,
-  FailureData,
-  TestFailure,
-} from '../types/stubs.js';
+import { getSelfHealingEnv } from '../config/self-healing-env.js';
+import type { FailureData, TestFailure } from '../types/failure-data.js';
 import { logger } from '../utils/logger.js';
+import { mapRootCauseString } from '../lib/root-cause.js';
 import { RootCause } from '../workflows/self-healing-workflow.js';
 
 export interface DiagnoseFailureInput {
@@ -14,6 +12,7 @@ export interface DiagnoseFailureInput {
   headSha: string;
   branch: string;
   installationId: number;
+  actor?: string;
   failureData: FailureData;
   testFailure?: TestFailure;
 }
@@ -41,42 +40,102 @@ export async function diagnoseFailure(
     branch: input.branch,
   });
 
+  const env = getSelfHealingEnv();
+
   try {
-    // Prepare failure data for Claude
-    const claudeInput: ClaudeInput = {
-      repository: input.repository,
-      workflowRunId: input.workflowRunId,
-      headSha: input.headSha,
-      branch: input.branch,
-      installationId: input.installationId,
-      failureData: input.failureData,
-      testFailure: input.testFailure,
-    };
-
-    // Call Claude API for diagnosis
-    const claudeResult = await callClaudeAPI(claudeInput);
-
-    if (!claudeResult) {
-      throw new Error('Claude API returned no result');
+    if (env.dryRun) {
+      return {
+        success: true,
+        rootCause: RootCause.UNKNOWN,
+        confidence: 0,
+        explanation: 'SELF_HEALING_DRY_RUN: diagnosis skipped',
+        patch: undefined,
+        error: undefined,
+      };
     }
 
-    // Parse Claude response
-    const parsedResult = parseClaudeResponse(claudeResult);
+    const apiKey = process.env['ANTHROPIC_API_KEY'] || '';
+    if (!apiKey) {
+      throw new Error('Missing ANTHROPIC_API_KEY');
+    }
+
+    const report = new FailureReportBuilder()
+      .setMetadata(
+        input.workflowRunId,
+        input.repository,
+        input.headSha,
+        input.branch,
+        input.actor || 'unknown',
+        input.installationId
+      )
+      .setFailureContext(
+        'workflow_failure',
+        'github_actions',
+        input.failureData.buildLogs.slice(0, 2000) || 'No build logs',
+        undefined
+      )
+      .setLogs({
+        workflowLogs: input.failureData.buildLogs,
+        buildLogs: input.failureData.buildLogs,
+        testLogs: input.testFailure?.output,
+        errorLogs: input.testFailure?.error,
+      })
+      .setGitContext(
+        input.failureData.baseSha,
+        input.headSha,
+        undefined,
+        input.failureData.changedFiles,
+        input.failureData.commitMessage,
+        input.failureData.author
+      )
+      .setTestOutput({
+        testResults: input.testFailure?.output,
+        failedTests: [],
+      })
+      .setEnvironment({
+        runner: input.failureData.runner,
+        os: input.failureData.os,
+        nodeVersion: input.failureData.nodeVersion,
+        dependencies: input.failureData.dependencies,
+      })
+      .setMetrics({
+        duration: input.failureData.duration,
+        memoryUsage: input.failureData.memoryUsage,
+        cpuUsage: input.failureData.cpuUsage,
+        networkRequests: input.failureData.networkRequests,
+      })
+      .build();
+
+    const client = new ClaudeClient(apiKey);
+    const result = await client.invokeWithFailureReport(report, {
+      timeoutMs: 120_000,
+      maxTokens: 8192,
+    });
+
+    const rawRc = result.response.rootCause;
+    const confidence01 = Math.min(
+      1,
+      Math.max(0, result.response.confidence / 100)
+    );
+    let rootCause = mapRootCauseString(rawRc);
+    if (confidence01 < 0.3) {
+      rootCause = RootCause.UNKNOWN;
+    }
 
     logger.info('Failure diagnosis completed', {
       activityId,
       repository: input.repository,
-      rootCause: parsedResult.rootCause,
-      confidence: parsedResult.confidence,
+      rootCause,
+      confidence: confidence01,
       duration: Date.now() - startTime,
     });
 
     return {
       success: true,
-      rootCause: parsedResult.rootCause,
-      confidence: parsedResult.confidence,
-      explanation: parsedResult.explanation,
-      patch: parsedResult.patch,
+      rootCause,
+      confidence: confidence01,
+      explanation: result.response.explanation,
+      patch: result.response.patch,
       error: undefined,
     };
   } catch (error) {
@@ -97,37 +156,4 @@ export async function diagnoseFailure(
       patch: undefined,
     };
   }
-}
-
-/**
- * Call Claude API for failure diagnosis
- */
-async function callClaudeAPI(input: ClaudeInput): Promise<ClaudeResult | null> {
-  // TODO: Implement actual Claude API call
-  // For now, return a mock response
-  return {
-    rootCause: 'Test failure',
-    confidence: 0.8,
-    patch: '',
-    explanation: 'Mock diagnosis result',
-    logs: input.failureData.buildLogs || '',
-  };
-}
-
-/**
- * Parse Claude API response
- */
-function parseClaudeResponse(response: ClaudeResult): {
-  rootCause: RootCause;
-  confidence: number;
-  explanation: string;
-  patch?: string;
-} {
-  // TODO: Implement proper response parsing
-  return {
-    rootCause: RootCause.FLAKY_TEST,
-    confidence: response.confidence,
-    explanation: response.explanation,
-    patch: response.patch,
-  };
 }

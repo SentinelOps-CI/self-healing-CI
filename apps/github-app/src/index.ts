@@ -42,6 +42,8 @@ async function main(): Promise<void> {
 
     // Create and start the application
     const app = new SelfHealingCIApp();
+    await app.initializeServices();
+
     const server = app.getServer();
 
     // Start the server

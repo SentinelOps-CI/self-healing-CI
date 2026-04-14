@@ -1,11 +1,10 @@
-import { logger } from '../../github-app/src/utils/logger.js';
-
-export interface FailureData {
-  logs?: string;
-  diff?: string;
-  testOutput?: string;
-  error?: string;
-}
+import JSZip from 'jszip';
+import type { FailureData } from '../types/failure-data.js';
+import { logger } from '../utils/logger.js';
+import {
+  createInstallationOctokit,
+  parseRepository,
+} from './installation-octokit.js';
 
 export interface CollectFailureLogsInput {
   repository: string;
@@ -13,98 +12,182 @@ export interface CollectFailureLogsInput {
   headSha: string;
   branch: string;
   installationId: number;
-  testFailure?: {
-    success: boolean;
-    error?: string;
-    output?: string;
-    retryDiagnosis?: boolean;
-  };
 }
 
+const MAX_LOG_CHARS = 400_000;
+
 /**
- * Service to collect failure logs and context for diagnosis
+ * Collect workflow failure context from the GitHub API (jobs, logs summary, compare).
  */
 export async function collectFailureLogs(
   input: CollectFailureLogsInput
 ): Promise<FailureData> {
   const startTime = Date.now();
+  const { owner, repo } = parseRepository(input.repository);
+  const octokit = await createInstallationOctokit(input.installationId);
+
+  const { data: run } = await octokit.rest.actions.getWorkflowRun({
+    owner,
+    repo,
+    run_id: input.workflowRunId,
+  });
+
+  const jobs = await octokit.paginate(
+    octokit.rest.actions.listJobsForWorkflowRun,
+    {
+      owner,
+      repo,
+      run_id: input.workflowRunId,
+      per_page: 100,
+    }
+  );
+
+  const failedJobSummaries: string[] = [];
+  let buildLogs = `Workflow: ${run.name || 'unknown'}\nConclusion: ${run.conclusion}\nHTML: ${run.html_url}\n\n`;
+
+  for (const job of jobs) {
+    if (job.conclusion !== 'failure' && job.conclusion !== 'cancelled') {
+      continue;
+    }
+    let jobSection = `## Job: ${job.name} (${job.conclusion})\n`;
+    for (const step of job.steps || []) {
+      if (step.conclusion === 'failure') {
+        jobSection += `  - failed step: ${step.name}\n`;
+      }
+    }
+    try {
+      const logText = await downloadJobLogsZipText(
+        octokit,
+        owner,
+        repo,
+        job.id
+      );
+      if (logText) {
+        jobSection += `\n### Log excerpt\n${logText}\n`;
+      }
+    } catch (e) {
+      logger.warn('Could not download job logs', {
+        jobId: job.id,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+    failedJobSummaries.push(jobSection);
+  }
+
+  buildLogs += failedJobSummaries.join('\n');
+  if (buildLogs.length > MAX_LOG_CHARS) {
+    buildLogs = `${buildLogs.slice(0, MAX_LOG_CHARS)}\n...[truncated]`;
+  }
+
+  const runExt = run as typeof run & { before?: string | null };
+  const baseSha = runExt.before || input.headSha;
+  const changedFiles: string[] = [];
 
   try {
-    logger.info('Collecting failure logs', {
-      repository: input.repository,
-      workflowRunId: input.workflowRunId,
-      headSha: input.headSha,
+    const compare = await octokit.rest.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead: `${baseSha}...${input.headSha}`,
     });
-
-    // TODO: Implement actual log collection from GitHub API
-    // This will collect:
-    // - Workflow run logs
-    // - Job logs
-    // - Test outputs
-    // - Git diff vs base SHA
-    // - Redact secrets
-
-    // For now, return stub data
-    const failureData: FailureData = {
-      logs: `[INFO] Workflow run ${input.workflowRunId} failed
-[ERROR] Test suite failed with exit code 1
-[ERROR] 2 tests failed, 1 test passed
-[ERROR] Assertion failed: expected true but got false`,
-      diff: `diff --git a/src/app.ts b/src/app.ts
-index 1234567..abcdefg 100644
---- a/src/app.ts
-+++ b/src/app.ts
-@@ -10,7 +10,7 @@ export class App {
-   constructor() {
-     this.config = {
-       port: process.env.PORT || 3000,
--      host: process.env.HOST || 'localhost',
-+      host: process.env.HOST || '0.0.0.0',
-       debug: process.env.DEBUG === 'true',
-     };
-   }`,
-      testOutput: `FAIL  src/app.test.ts
-  ● App initialization
-  
-    expect(received).toBe(expected)
-    
-    Expected: true
-    Received: false
-    
-       8 |   it('should initialize correctly', () => {
-       9 |     const app = new App();
-    > 10 |     expect(app.isReady()).toBe(true);
-         |                        ^
-      11 |   });
-      12 | });
-    
-    at Object.<anonymous> (src/app.test.ts:10:5)
-    
-Test Suites: 1 failed, 0 passed, 1 total
-Tests:       1 failed, 0 passed, 1 total`,
-      error: 'Test suite failed with 1 failing test',
-    };
-
-    logger.info('Failure logs collected', {
-      repository: input.repository,
-      workflowRunId: input.workflowRunId,
-      logsSize: failureData.logs?.length || 0,
-      diffSize: failureData.diff?.length || 0,
-      testOutputSize: failureData.testOutput?.length || 0,
-      duration: Date.now() - startTime,
+    for (const f of compare.data.files || []) {
+      changedFiles.push(f.filename);
+    }
+  } catch (e) {
+    logger.warn('compareCommits failed', {
+      error: e instanceof Error ? e.message : String(e),
     });
-
-    return failureData;
-  } catch (error) {
-    logger.error('Failed to collect failure logs', {
-      repository: input.repository,
-      workflowRunId: input.workflowRunId,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      duration: Date.now() - startTime,
-    });
-
-    return {
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
   }
+
+  let commitMessage = '';
+  let author = '';
+  try {
+    const c = await octokit.rest.repos.getCommit({
+      owner,
+      repo,
+      ref: input.headSha,
+    });
+    commitMessage = c.data.commit.message || '';
+    author = c.data.commit.author?.name || '';
+  } catch {
+    commitMessage = '';
+    author = '';
+  }
+
+  const duration =
+    run.run_started_at && run.updated_at
+      ? new Date(run.updated_at).getTime() -
+        new Date(run.run_started_at).getTime()
+      : 0;
+
+  logger.info('Failure context collected', {
+    repository: input.repository,
+    workflowRunId: input.workflowRunId,
+    durationMs: Date.now() - startTime,
+    logChars: buildLogs.length,
+  });
+
+  return {
+    buildLogs,
+    baseSha,
+    changedFiles,
+    commitMessage,
+    author,
+    duration,
+    failedTests: [],
+    runner: run.name || '',
+    os: '',
+    nodeVersion: '',
+    dependencies: {},
+    environment: {},
+    memoryUsage: 0,
+    cpuUsage: 0,
+    networkRequests: 0,
+  };
+}
+
+async function downloadJobLogsZipText(
+  octokit: Awaited<ReturnType<typeof createInstallationOctokit>>,
+  owner: string,
+  repo: string,
+  jobId: number
+): Promise<string> {
+  const response = await octokit.request({
+    method: 'GET',
+    url: 'GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs',
+    owner,
+    repo,
+    job_id: jobId,
+    request: { redirect: 'manual' },
+  });
+
+  if (response.status !== 302 && response.status !== 301) {
+    return '';
+  }
+
+  const location = response.headers.location;
+  if (!location) {
+    return '';
+  }
+
+  const logRes = await fetch(location);
+  if (!logRes.ok) {
+    return '';
+  }
+
+  const buf = Buffer.from(await logRes.arrayBuffer());
+  const zip = await JSZip.loadAsync(buf);
+  const parts: string[] = [];
+
+  for (const [name, file] of Object.entries(zip.files)) {
+    if (!file.dir && (name.endsWith('.txt') || name.includes('/'))) {
+      const content = await file.async('string');
+      parts.push(`### ${name}\n${content}`);
+    }
+  }
+
+  let text = parts.join('\n\n');
+  if (text.length > 200_000) {
+    text = `${text.slice(0, 200_000)}\n...[truncated]`;
+  }
+  return text;
 }

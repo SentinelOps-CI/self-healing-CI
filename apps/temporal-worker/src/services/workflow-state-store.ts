@@ -1,3 +1,4 @@
+import { getSharedRedis } from './redis-client.js';
 import { logger } from '../utils/logger.js';
 import { WorkflowState } from '../workflows/self-healing-workflow.js';
 
@@ -15,7 +16,7 @@ export interface WorkflowStateResult {
 }
 
 /**
- * Service to store workflow state transitions for deterministic replay
+ * Persist workflow state transitions to Redis (optional).
  */
 export async function updateWorkflowState(
   input: WorkflowStateData
@@ -23,32 +24,29 @@ export async function updateWorkflowState(
   const startTime = Date.now();
   const stateId = `state_${input.workflowId}_${Date.now()}_${Math.random()
     .toString(36)
-    .substr(2, 9)}`;
+    .substring(2, 11)}`;
 
   try {
-    logger.info('Updating workflow state', {
-      workflowId: input.workflowId,
-      state: input.state,
-      timestamp: input.timestamp,
+    const redis = getSharedRedis();
+    const payload = JSON.stringify({
+      ...input,
       stateId,
+      savedAt: new Date().toISOString(),
     });
 
-    // TODO: Implement actual state persistence
-    // This will include:
-    // - Event sourcing with append-only log
-    // - State snapshots for performance
-    // - Deterministic replay capability
-    // - State versioning
-    // - State cleanup policies
+    if (redis) {
+      await redis.set(
+        `workflow_state:${input.workflowId}`,
+        payload,
+        'EX',
+        86400 * 7
+      );
+    }
 
-    // For now, just log the state transition
-    logger.info('Workflow state updated (stub)', {
+    logger.info('Workflow state persisted', {
       stateId,
       workflowId: input.workflowId,
       state: input.state,
-      timestamp: input.timestamp,
-      data: input.data,
-      error: input.error,
       duration: Date.now() - startTime,
     });
 

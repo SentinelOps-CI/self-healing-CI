@@ -1,68 +1,103 @@
-import { logger } from '../../github-app/src/utils/logger.js';
+import { logger } from '../utils/logger.js';
 
-export interface CloudEvent {
+export interface SendCloudEventInput {
   type: string;
   source: string;
+  subject: string;
   data: Record<string, unknown>;
 }
 
-export interface CloudEventResult {
+export interface SendCloudEventResult {
   eventId: string;
   success: boolean;
+  error?: string;
 }
 
 /**
- * Service to emit CloudEvents for observability
+ * Build a CloudEvents 1.0 JSON object (structured content mode).
  */
-export async function emitCloudEvent(
-  topic: string,
-  event: CloudEvent
-): Promise<CloudEventResult> {
+export function buildCloudEventEnvelope(
+  input: SendCloudEventInput,
+  eventId: string
+): Record<string, unknown> {
+  return {
+    specversion: '1.0',
+    id: eventId,
+    source: input.source,
+    type: input.type,
+    subject: input.subject,
+    time: new Date().toISOString(),
+    datacontenttype: 'application/json',
+    data: input.data,
+  };
+}
+
+/**
+ * Emit a CloudEvent: always logs; optionally POSTs to `CLOUDEVENTS_INGEST_URL` when set.
+ */
+export async function sendCloudEvent(
+  input: SendCloudEventInput
+): Promise<SendCloudEventResult> {
+  const eventId = `evt_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+  const envelope = buildCloudEventEnvelope(input, eventId);
   const startTime = Date.now();
-  const eventId = `evt_${Date.now()}_${Math.random()
-    .toString(36)
-    .substr(2, 9)}`;
 
-  try {
-    logger.info('Emitting CloudEvent', {
-      topic,
-      eventType: event.type,
-      source: event.source,
-      eventId,
-    });
+  logger.info('CloudEvent prepared', {
+    eventId,
+    type: input.type,
+    source: input.source,
+    subject: input.subject,
+  });
 
-    // TODO: Implement actual CloudEvents emission
-    // This will include:
-    // - Event streaming to Kafka/PubSub
-    // - Event persistence
-    // - Event routing
-    // - Dead letter queues
-    // - Event schema validation
-
-    // For now, just log the event
-    logger.info('CloudEvent emitted (stub)', {
-      eventId,
-      topic,
-      event,
-      duration: Date.now() - startTime,
-    });
-
-    return {
-      eventId,
-      success: true,
-    };
-  } catch (error) {
-    logger.error('Failed to emit CloudEvent', {
-      eventId,
-      topic,
-      eventType: event.type,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      duration: Date.now() - startTime,
-    });
-
-    return {
-      eventId,
-      success: false,
-    };
+  const ingestUrl = process.env['CLOUDEVENTS_INGEST_URL']?.trim();
+  if (ingestUrl) {
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/cloudevents+json; charset=utf-8',
+      };
+      const token = process.env['CLOUDEVENTS_INGEST_TOKEN']?.trim();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const res = await fetch(ingestUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(envelope),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        logger.error('CloudEvent ingest HTTP error', {
+          eventId,
+          status: res.status,
+          body: text.slice(0, 500),
+          duration: Date.now() - startTime,
+        });
+        return { eventId, success: false, error: `HTTP ${res.status}` };
+      }
+      logger.info('CloudEvent delivered', {
+        eventId,
+        duration: Date.now() - startTime,
+      });
+      return { eventId, success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('CloudEvent ingest failed', {
+        eventId,
+        error: message,
+        duration: Date.now() - startTime,
+      });
+      return { eventId, success: false, error: message };
+    }
   }
+
+  logger.info(
+    'CloudEvent (log only; set CLOUDEVENTS_INGEST_URL to POST to an HTTP endpoint)',
+    {
+      eventId,
+      type: input.type,
+      subject: input.subject,
+      duration: Date.now() - startTime,
+    }
+  );
+  return { eventId, success: true };
 }

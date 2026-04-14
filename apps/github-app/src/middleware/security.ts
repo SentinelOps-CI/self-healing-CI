@@ -162,7 +162,7 @@ export class SecurityMiddleware {
       if (request.url.includes('/webhook')) {
         const signature = request.headers['x-hub-signature-256'] as string;
         const payload = JSON.stringify(request.body || {});
-        const secret = process.env.GITHUB_WEBHOOK_SECRET;
+        const secret = process.env['GITHUB_WEBHOOK_SECRET'];
 
         if (
           !signature ||

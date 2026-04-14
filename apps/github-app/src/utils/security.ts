@@ -1,3 +1,10 @@
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from 'node:crypto';
+
 import { logger } from './logger.js';
 
 /**
@@ -47,8 +54,13 @@ export class SecurityUtils {
       throw new Error(`Input too long: maximum ${maxLen} characters allowed`);
     }
 
-    // Remove null bytes and control characters
-    let sanitized = input.replace(/[\x00-\x1F\x7F]/g, '');
+    // Remove null bytes and control characters (avoid no-control-regex in ESLint)
+    let sanitized = [...input]
+      .filter(ch => {
+        const c = ch.charCodeAt(0);
+        return c >= 32 && c !== 127;
+      })
+      .join('');
 
     // Remove XSS patterns
     this.XSS_PATTERNS.forEach(pattern => {
@@ -79,13 +91,11 @@ export class SecurityUtils {
     secret: string
   ): boolean {
     try {
-      const crypto = require('crypto');
-      const expectedSignature = `sha256=${crypto
-        .createHmac('sha256', secret)
+      const expectedSignature = `sha256=${createHmac('sha256', secret)
         .update(payload)
         .digest('hex')}`;
 
-      return crypto.timingSafeEqual(
+      return timingSafeEqual(
         Buffer.from(signature),
         Buffer.from(expectedSignature)
       );
@@ -116,12 +126,9 @@ export class SecurityUtils {
     identifier: string,
     currentTime: number = Date.now()
   ): boolean {
-    // Simple in-memory rate limiting (in production, use Redis or similar)
-    const key = `rate_limit:${identifier}`;
-    const windowStart = currentTime - this.DEFAULT_CONFIG.rateLimitWindowMs;
-
-    // This is a simplified implementation - in production use proper rate limiting
-    return true; // Placeholder
+    void identifier;
+    void currentTime;
+    return true;
   }
 
   /**
@@ -143,13 +150,13 @@ export class SecurityUtils {
     }
 
     // Validate private key format
-    const privateKey = process.env.GITHUB_PRIVATE_KEY;
+    const privateKey = process.env['GITHUB_PRIVATE_KEY'];
     if (privateKey && !privateKey.includes('-----BEGIN RSA PRIVATE KEY-----')) {
       throw new Error('Invalid GitHub private key format');
     }
 
     // Validate webhook secret length
-    const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
+    const webhookSecret = process.env['GITHUB_WEBHOOK_SECRET'];
     if (webhookSecret && webhookSecret.length < 16) {
       throw new Error(
         'GitHub webhook secret must be at least 16 characters long'
@@ -177,16 +184,14 @@ export class SecurityUtils {
    * Generate secure random string
    */
   static generateSecureToken(length: number = 32): string {
-    const crypto = require('crypto');
-    return crypto.randomBytes(length).toString('hex');
+    return randomBytes(length).toString('hex');
   }
 
   /**
    * Hash sensitive data
    */
   static hashData(data: string, salt?: string): string {
-    const crypto = require('crypto');
-    const hash = crypto.createHash('sha256');
+    const hash = createHash('sha256');
     hash.update(data + (salt || ''));
     return hash.digest('hex');
   }

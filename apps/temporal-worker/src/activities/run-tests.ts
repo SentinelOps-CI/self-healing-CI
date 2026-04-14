@@ -1,14 +1,14 @@
 import { log } from '@temporalio/activity';
-import type { TestContainerRequest } from '../types/stubs.js';
-import { FreestyleClient } from '../types/stubs.js';
+import { executeTests } from '../services/test-execution.js';
 import { logger } from '../utils/logger.js';
 
 export interface RunTestsInput {
   repository: string;
   headSha: string;
   branch: string;
-  testCommand: string;
-  timeoutMs: number;
+  /** Defaults to SELF_HEALING_TEST_COMMAND or `pnpm test`. */
+  testCommand?: string;
+  timeoutMs?: number;
 }
 
 export interface RunTestsResult {
@@ -24,34 +24,29 @@ export interface RunTestsResult {
  */
 export async function runTests(input: RunTestsInput): Promise<RunTestsResult> {
   const startTime = Date.now();
+  const timeoutMs =
+    input.timeoutMs ??
+    parseInt(process.env['SELF_HEALING_TEST_TIMEOUT_MS'] || '600000', 10);
+  const testCommand =
+    input.testCommand ||
+    process.env['SELF_HEALING_TEST_COMMAND'] ||
+    'pnpm test';
+
   const activityId = log.info('Running tests', {
     repository: input.repository,
     headSha: input.headSha,
     branch: input.branch,
-    testCommand: input.testCommand,
+    testCommand,
   });
 
   try {
-    // Initialize Freestyle client
-    const freestyleClient = new FreestyleClient({
-      apiKey: (process.env as any).FREESTYLE_API_KEY || '',
-      apiUrl:
-        (process.env as any).FREESTYLE_API_URL || 'https://api.freestyle.dev',
-      timeoutMs: input.timeoutMs,
-      maxRetries: 2,
-    });
-
-    // Create test request
-    const testRequest: TestContainerRequest = {
+    const testResult = await executeTests({
       repository: input.repository,
       headSha: input.headSha,
       branch: input.branch,
-      testCommand: input.testCommand,
-      timeoutMs: input.timeoutMs,
-    };
-
-    // Run tests with Freestyle
-    const testResult = await freestyleClient.runTests(testRequest);
+      testCommand,
+      timeoutMs,
+    });
 
     logger.info('Tests completed', {
       activityId,

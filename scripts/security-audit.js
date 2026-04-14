@@ -25,31 +25,18 @@ class SecurityAuditor {
    * Run all security checks
    */
   async runAudit() {
-    console.log('🔒 Starting Security Audit for Self-Healing CI...\n');
+    console.log('[INFO] Starting Security Audit for Self-Healing CI...\n');
 
     try {
-      // Check dependencies
       this.checkDependencies();
-
-      // Check environment configuration
       this.checkEnvironmentConfig();
-
-      // Check file permissions
       this.checkFilePermissions();
-
-      // Check configuration files
       this.checkConfigurationFiles();
-
-      // Check for secrets in code
       this.checkForSecrets();
-
-      // Check SSL/TLS configuration
       this.checkSSLConfiguration();
-
-      // Generate report
       this.generateReport();
     } catch (error) {
-      console.error('❌ Security audit failed:', error.message);
+      console.error('[FAIL] Security audit failed:', error.message);
       process.exit(1);
     }
   }
@@ -58,29 +45,28 @@ class SecurityAuditor {
    * Check for vulnerable dependencies
    */
   checkDependencies() {
-    console.log('📦 Checking dependencies for vulnerabilities...');
+    console.log('[INFO] Checking dependencies for vulnerabilities...');
 
     try {
-      // Check if pnpm audit is available
       const result = execSync('pnpm audit', {
         encoding: 'utf8',
         stdio: 'pipe',
       });
 
       if (result.includes('No known vulnerabilities found')) {
-        this.passed.push('✅ No vulnerabilities found in dependencies');
+        this.passed.push('[PASS] No vulnerabilities found in dependencies');
       } else if (result.includes('found 0 vulnerabilities')) {
         this.passed.push(
-          '✅ No critical vulnerabilities found in dependencies'
+          '[PASS] No critical vulnerabilities found in dependencies'
         );
       } else {
         this.issues.push(
-          '❌ Vulnerable dependencies detected. Run "pnpm audit" for details.'
+          '[FAIL] Vulnerable dependencies detected. Run "pnpm audit" for details.'
         );
       }
     } catch (error) {
       this.warnings.push(
-        '⚠️  Could not run dependency audit. Ensure pnpm is installed.'
+        '[WARN] Could not run dependency audit. Ensure pnpm is installed.'
       );
     }
   }
@@ -89,39 +75,43 @@ class SecurityAuditor {
    * Check environment configuration
    */
   checkEnvironmentConfig() {
-    console.log('🔐 Checking environment configuration...');
+    console.log('[INFO] Checking environment configuration...');
 
     const envFile = path.join(process.cwd(), '.env');
-    const envExample = path.join(process.cwd(), 'env.example');
+    const envExample = path.join(process.cwd(), '.env.example');
 
-    // Check if .env file exists and is not committed
     if (fs.existsSync(envFile)) {
       const gitStatus = execSync('git status --porcelain .env', {
         encoding: 'utf8',
       });
       if (gitStatus.includes('.env')) {
         this.issues.push(
-          '❌ .env file is tracked in git. Remove it and add to .gitignore.'
+          '[FAIL] .env file is tracked in git. Remove it and add to .gitignore.'
         );
       } else {
-        this.passed.push('✅ .env file exists and is not tracked in git');
+        this.passed.push('[PASS] .env file exists and is not tracked in git');
       }
     } else {
       this.warnings.push(
-        '⚠️  .env file not found. Create one based on env.example'
+        '[WARN] .env file not found. Create one based on .env.example'
       );
     }
 
-    // Check env.example
     if (fs.existsSync(envExample)) {
       const content = fs.readFileSync(envExample, 'utf8');
-      if (content.includes('your_') || content.includes('example_')) {
-        this.passed.push('✅ env.example uses placeholder values');
+      const looksLikeTemplate =
+        /Copy to \.env|your_|example_|^[A-Z0-9_]+=\s*$/m.test(content);
+      if (looksLikeTemplate) {
+        this.passed.push(
+          '[PASS] .env.example uses placeholders or empty defaults'
+        );
       } else {
-        this.issues.push(
-          '❌ env.example contains actual values instead of placeholders'
+        this.warnings.push(
+          '[WARN] Review .env.example for accidental real credentials'
         );
       }
+    } else {
+      this.warnings.push('[WARN] .env.example not found');
     }
   }
 
@@ -129,7 +119,7 @@ class SecurityAuditor {
    * Check file permissions
    */
   checkFilePermissions() {
-    console.log('📁 Checking file permissions...');
+    console.log('[INFO] Checking file permissions...');
 
     const criticalFiles = ['.env', 'package.json', 'pnpm-lock.yaml'];
 
@@ -141,11 +131,11 @@ class SecurityAuditor {
 
         if (mode > parseInt('644', 8)) {
           this.warnings.push(
-            `⚠️  ${file} has overly permissive permissions: ${mode.toString(8)}`
+            `[WARN] ${file} has overly permissive permissions: ${mode.toString(8)}`
           );
         } else {
           this.passed.push(
-            `✅ ${file} has appropriate permissions: ${mode.toString(8)}`
+            `[PASS] ${file} has appropriate permissions: ${mode.toString(8)}`
           );
         }
       }
@@ -156,19 +146,19 @@ class SecurityAuditor {
    * Check configuration files
    */
   checkConfigurationFiles() {
-    console.log('⚙️  Checking configuration files...');
+    console.log('[INFO] Checking configuration files...');
 
-    // Check package.json for security scripts
     const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
     const scripts = packageJson.scripts || {};
 
     if (scripts['security:audit']) {
-      this.passed.push('✅ Security audit script found in package.json');
+      this.passed.push('[PASS] Security audit script found in package.json');
     } else {
-      this.warnings.push('⚠️  No security audit script found in package.json');
+      this.warnings.push(
+        '[WARN] No security audit script found in package.json'
+      );
     }
 
-    // Check for security-related dependencies
     const devDependencies = packageJson.devDependencies || {};
     const hasSecurityTools = Object.keys(devDependencies).some(
       dep =>
@@ -178,10 +168,12 @@ class SecurityAuditor {
     );
 
     if (hasSecurityTools) {
-      this.passed.push('✅ Security-related development dependencies found');
+      this.passed.push(
+        '[PASS] Security-related development dependencies found'
+      );
     } else {
       this.warnings.push(
-        '⚠️  No security-related development dependencies found'
+        '[WARN] No security-related development dependencies found'
       );
     }
   }
@@ -190,7 +182,7 @@ class SecurityAuditor {
    * Check for secrets in code
    */
   checkForSecrets() {
-    console.log('🔍 Checking for secrets in code...');
+    console.log('[INFO] Checking for secrets in code...');
 
     const patterns = [
       /password\s*=\s*['"][^'"]+['"]/gi,
@@ -208,7 +200,7 @@ class SecurityAuditor {
         const content = fs.readFileSync(file, 'utf8');
         patterns.forEach(pattern => {
           if (pattern.test(content)) {
-            this.issues.push(`❌ Potential secret found in ${file}`);
+            this.issues.push(`[FAIL] Potential secret found in ${file}`);
             secretsFound = true;
           }
         });
@@ -218,7 +210,7 @@ class SecurityAuditor {
     });
 
     if (!secretsFound) {
-      this.passed.push('✅ No obvious secrets found in source code');
+      this.passed.push('[PASS] No obvious secrets found in source code');
     }
   }
 
@@ -226,16 +218,15 @@ class SecurityAuditor {
    * Check SSL/TLS configuration
    */
   checkSSLConfiguration() {
-    console.log('🔒 Checking SSL/TLS configuration...');
+    console.log('[INFO] Checking SSL/TLS configuration...');
 
-    // Check if HTTPS is configured
     const appFile = path.join(process.cwd(), 'apps/github-app/src/app.ts');
     if (fs.existsSync(appFile)) {
       const content = fs.readFileSync(appFile, 'utf8');
       if (content.includes('https') || content.includes('ssl')) {
-        this.passed.push('✅ HTTPS/SSL configuration found');
+        this.passed.push('[PASS] HTTPS/SSL configuration found');
       } else {
-        this.warnings.push('⚠️  No HTTPS/SSL configuration found');
+        this.warnings.push('[WARN] No HTTPS/SSL configuration found');
       }
     }
   }
@@ -286,21 +277,21 @@ class SecurityAuditor {
    * Generate security audit report
    */
   generateReport() {
-    console.log('\n📊 Security Audit Report');
+    console.log('\n[INFO] Security Audit Report');
     console.log('='.repeat(50));
 
     if (this.passed.length > 0) {
-      console.log('\n✅ PASSED CHECKS:');
+      console.log('\n[PASS] CHECKS PASSED:');
       this.passed.forEach(check => console.log(`  ${check}`));
     }
 
     if (this.warnings.length > 0) {
-      console.log('\n⚠️  WARNINGS:');
+      console.log('\n[WARN] WARNINGS:');
       this.warnings.forEach(warning => console.log(`  ${warning}`));
     }
 
     if (this.issues.length > 0) {
-      console.log('\n❌ SECURITY ISSUES:');
+      console.log('\n[FAIL] SECURITY ISSUES:');
       this.issues.forEach(issue => console.log(`  ${issue}`));
     }
 
@@ -308,28 +299,30 @@ class SecurityAuditor {
 
     const totalChecks =
       this.passed.length + this.warnings.length + this.issues.length;
-    const score = Math.round((this.passed.length / totalChecks) * 100);
+    const score =
+      totalChecks > 0
+        ? Math.round((this.passed.length / totalChecks) * 100)
+        : 100;
 
-    console.log(`\n🎯 Security Score: ${score}%`);
+    console.log(`\n[INFO] Security score: ${score}%`);
 
     if (this.issues.length > 0) {
       console.log(
-        '\n🚨 CRITICAL: Security issues found that should be addressed immediately!'
+        '\n[FAIL] Critical: security issues found that should be addressed immediately.'
       );
       process.exit(1);
     } else if (this.warnings.length > 0) {
       console.log(
-        '\n⚠️  WARNING: Some security warnings found. Consider addressing them.'
+        '\n[WARN] Some security warnings found. Consider addressing them.'
       );
       process.exit(0);
     } else {
-      console.log('\n🎉 EXCELLENT: All security checks passed!');
+      console.log('\n[PASS] All security checks passed.');
       process.exit(0);
     }
   }
 }
 
-// Run the security audit
 if (require.main === module) {
   const auditor = new SecurityAuditor();
   auditor.runAudit();

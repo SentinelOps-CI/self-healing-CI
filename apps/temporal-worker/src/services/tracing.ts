@@ -354,7 +354,7 @@ export function recordSLOViolation(
  * Creates a child span for sub-operations
  */
 export function createChildSpan(
-  parentSpan: any,
+  _parentSpan: unknown,
   operationName: string,
   attributes: Record<string, string | number | boolean> = {}
 ) {

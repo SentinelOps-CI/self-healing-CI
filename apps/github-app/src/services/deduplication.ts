@@ -406,6 +406,41 @@ export class DeduplicationService {
   }
 
   /**
+   * Enforce a per-repository daily cap on self-healing workflow starts.
+   */
+  async consumeSelfHealingBudget(
+    repositoryFullName: string,
+    maxPerDay: number
+  ): Promise<boolean> {
+    if (!this.redis) {
+      try {
+        await this.initialize();
+      } catch {
+        return true;
+      }
+    }
+    if (!this.redis) {
+      return true;
+    }
+
+    const day = new Date().toISOString().slice(0, 10);
+    const key = `self_heal_budget:${repositoryFullName}:${day}`;
+    const n = await this.redis.incr(key);
+    if (n === 1) {
+      await this.redis.expire(key, 172800);
+    }
+    if (n > maxPerDay) {
+      logger.warn('Self-healing daily budget exceeded', {
+        repositoryFullName,
+        count: n,
+        maxPerDay,
+      });
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Check if a workflow run is a duplicate
    */
   async isDuplicate(

@@ -23,6 +23,7 @@
     "prepare": "husky install",
     "semantic-release": "semantic-release",
     "validate": "pnpm lint && pnpm type-check && pnpm test",
+    "ci": "pnpm install --frozen-lockfile && pnpm --filter @self-healing-ci/claude run build && pnpm --filter @self-healing-ci/freestyle run build && pnpm --filter @self-healing-ci/lean run build && pnpm --filter @self-healing-ci/temporal-worker exec tsc --noEmit && pnpm --filter @self-healing-ci/github-app exec tsc --noEmit && pnpm --filter @self-healing-ci/temporal-worker run lint && pnpm --filter @self-healing-ci/github-app run lint && pnpm --filter @self-healing-ci/temporal-worker test && pnpm --filter @self-healing-ci/github-app test",
     "security:audit": "node scripts/security-audit.js",
     "security:scan": "pnpm run -r security:scan",
     "security:check": "pnpm security:audit && pnpm audit",

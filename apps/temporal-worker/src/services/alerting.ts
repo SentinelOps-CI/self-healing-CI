@@ -476,14 +476,15 @@ export class AlertingService {
  */
 export function createDefaultAlertingConfig(): AlertConfig {
   return {
-    opsgenieApiKey: process.env.OPSGENIE_API_KEY || '',
-    opsgenieApiUrl: process.env.OPSGENIE_API_URL || 'https://api.opsgenie.com',
-    teamName: process.env.OPSGENIE_TEAM_NAME || 'Self-Healing-CI',
-    escalationPolicy: process.env.OPSGENIE_ESCALATION_POLICY || 'default',
-    mttrThresholdMs: parseInt(process.env.MTTR_THRESHOLD_MS || '600000'), // 10 minutes
+    opsgenieApiKey: process.env['OPSGENIE_API_KEY'] || '',
+    opsgenieApiUrl:
+      process.env['OPSGENIE_API_URL'] || 'https://api.opsgenie.com',
+    teamName: process.env['OPSGENIE_TEAM_NAME'] || 'Self-Healing-CI',
+    escalationPolicy: process.env['OPSGENIE_ESCALATION_POLICY'] || 'default',
+    mttrThresholdMs: parseInt(process.env['MTTR_THRESHOLD_MS'] || '600000'), // 10 minutes
     proofFailureRateThreshold: parseFloat(
-      process.env.PROOF_FAILURE_RATE_THRESHOLD || '5'
+      process.env['PROOF_FAILURE_RATE_THRESHOLD'] || '5'
     ), // 5%
-    alertWindowMs: parseInt(process.env.ALERT_WINDOW_MS || '3600000'), // 1 hour
+    alertWindowMs: parseInt(process.env['ALERT_WINDOW_MS'] || '3600000'), // 1 hour
   };
 }

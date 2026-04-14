@@ -52,7 +52,7 @@ export type ProofValidationRequest = z.infer<
  * Proof validation result schema
  */
 export const ProofValidationResultSchema = z.object({
-  success: boolean,
+  success: z.boolean(),
   validatedTheorems: z.array(TheoremSchema),
   failedTheorems: z.array(TheoremSchema),
   totalDuration: z.number(),
@@ -87,7 +87,7 @@ export type ProofGenerationRequest = z.infer<
  * Lean proof generation result schema
  */
 export const ProofGenerationResultSchema = z.object({
-  success: boolean,
+  success: z.boolean(),
   theorem: TheoremSchema.optional(),
   proofAttempts: z.array(
     z.object({

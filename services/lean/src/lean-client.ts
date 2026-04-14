@@ -1,15 +1,17 @@
 import { execa } from 'execa';
 import fs from 'fs-extra';
 import path from 'path';
-import { logger } from '../../github-app/src/utils/logger.js';
+import { logger } from './logger.js';
 import {
   DEFAULT_LEAN_TEMPLATE,
   DEFAULT_PROOF_VALIDATION_CONFIG,
-  Invariant,
   LEAN_TACTICS,
+  ProofStrategy,
+} from './types/proofs.js';
+import type {
+  Invariant,
   ProofGenerationRequest,
   ProofGenerationResult,
-  ProofStrategy,
   ProofValidationConfig,
   ProofValidationRequest,
   ProofValidationResult,
@@ -182,6 +184,7 @@ export class LeanClient {
                 confidence: 0.9,
                 executionTime: Date.now() - attemptStart,
                 tactics: this.extractTactics(proof),
+                dependencies: [],
               },
               proofAttempts,
             };
@@ -190,7 +193,7 @@ export class LeanClient {
           proofAttempts.push({
             attempt,
             proof,
-            status: validationResult.status === 'timeout' ? 'timeout' : 'error',
+            status: 'error',
             duration: Date.now() - attemptStart,
             error: validationResult.error,
           });
@@ -307,6 +310,7 @@ ${main}
         confidence: 0,
         executionTime: 0,
         tactics: [],
+        dependencies: [],
       };
 
       theorems.push(theorem);
@@ -462,7 +466,7 @@ ${theorem.proof}
   private getTacticsForStrategy(strategy: ProofStrategy): string[] {
     switch (strategy) {
       case ProofStrategy.SIMPLE:
-        return LEAN_TACTICS.BASIC;
+        return [...LEAN_TACTICS.BASIC];
       case ProofStrategy.ADVANCED:
         return [...LEAN_TACTICS.BASIC, ...LEAN_TACTICS.ADVANCED];
       case ProofStrategy.AUTOMATION:
@@ -478,7 +482,7 @@ ${theorem.proof}
           ...LEAN_TACTICS.SPECIALIZED,
         ];
       default:
-        return LEAN_TACTICS.BASIC;
+        return [...LEAN_TACTICS.BASIC];
     }
   }
 
@@ -489,7 +493,7 @@ ${theorem.proof}
     invariant: Invariant,
     tactics: string[],
     context: string,
-    previousAttempts: string[]
+    _previousAttempts: string[]
   ): string[] {
     const steps: string[] = [];
 

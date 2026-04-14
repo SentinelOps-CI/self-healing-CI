@@ -2,6 +2,8 @@
 
 import { Worker } from '@temporalio/worker';
 import dotenv from 'dotenv';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as activities from './activities/index.js';
 import { logger } from './utils/logger.js';
 
@@ -138,12 +140,13 @@ function validateEnvironment(): void {
   logger.info('Environment validation passed');
 }
 
-// Run the worker
-if (require.main === module) {
-  // Validate environment before starting
+const isMainModule =
+  process.argv[1] !== undefined &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+
+if (isMainModule) {
   validateEnvironment();
 
-  // Start the worker
   main().catch(error => {
     logger.error('Worker failed to start', {
       error: error instanceof Error ? error.message : 'Unknown error',

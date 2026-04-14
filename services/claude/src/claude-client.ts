@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import { logger } from '../../github-app/src/utils/logger.js';
-import { FailureReport } from './types/failure-report.js';
+import type { FailureReport } from './types/failure-report.js';
+import { logger } from './logger.js';
 
 // Claude response schema
 const ClaudeResponseSchema = z.object({
@@ -45,7 +45,6 @@ export class ClaudeClient {
   private readonly defaultMaxTokens = 16000;
   private readonly defaultTemperature = 0.1;
   private readonly defaultRetryAttempts = 3;
-  private readonly defaultTimeoutMs = 30000;
 
   constructor(apiKey: string) {
     this.client = new Anthropic({
@@ -129,8 +128,6 @@ export class ClaudeClient {
     const maxTokens = options.maxTokens || this.defaultMaxTokens;
     const temperature = options.temperature || this.defaultTemperature;
     const retryAttempts = options.retryAttempts || this.defaultRetryAttempts;
-    const timeoutMs = options.timeoutMs || this.defaultTimeoutMs;
-
     let lastError: Error | null = null;
     let retryCount = 0;
 
@@ -148,24 +145,15 @@ export class ClaudeClient {
           temperature,
           system: systemPrompt,
           messages: [{ role: 'user', content: userPrompt }],
-          stream: options.stream || false,
+          stream: false,
         });
 
-        if (options.stream && response.stream) {
-          return this.handleStreamingResponse(
-            response,
-            invocationId,
-            startTime,
-            retryCount
-          );
-        } else {
-          return this.handleNonStreamingResponse(
-            response,
-            invocationId,
-            startTime,
-            retryCount
-          );
-        }
+        return this.handleNonStreamingResponse(
+          response,
+          invocationId,
+          startTime,
+          retryCount
+        );
       } catch (error) {
         lastError = error as Error;
         retryCount = attempt;
@@ -206,46 +194,6 @@ export class ClaudeClient {
       retryCount,
       lastError
     );
-  }
-
-  /**
-   * Handle streaming response from Claude
-   */
-  private async handleStreamingResponse(
-    response: any,
-    invocationId: string,
-    startTime: number,
-    retryCount: number
-  ): Promise<ClaudeInvocationResult> {
-    let fullContent = '';
-    let tokensUsed = 0;
-
-    for await (const chunk of response.stream) {
-      if (chunk.type === 'content_block_delta') {
-        fullContent += chunk.delta.text;
-      }
-      if (chunk.type === 'message_delta' && chunk.delta.usage) {
-        tokensUsed = chunk.delta.usage.output_tokens || 0;
-      }
-    }
-
-    const parsedResponse = this.parseClaudeResponse(fullContent);
-    const duration = Date.now() - startTime;
-
-    logger.info('Claude streaming response completed', {
-      invocationId,
-      tokensUsed,
-      responseLength: fullContent.length,
-      duration,
-    });
-
-    return {
-      response: parsedResponse,
-      tokensUsed,
-      model: 'claude-3-5-haiku-20241022',
-      duration,
-      retryCount,
-    };
   }
 
   /**

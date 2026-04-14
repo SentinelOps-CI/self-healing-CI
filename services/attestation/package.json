@@ -20,8 +20,6 @@
   "dependencies": {
     "@types/node": "^20.0.0",
     "axios": "^1.6.0",
-    "cosign": "^0.1.0",
-    "slsa": "^0.1.0",
     "crypto": "^1.0.0",
     "fs-extra": "^11.2.0",
     "path": "^0.12.7",
@@ -50,4 +48,4 @@
   ],
   "author": "Self-Healing CI Team",
   "license": "MIT"
-} 
+}

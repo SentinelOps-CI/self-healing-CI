@@ -1,10 +1,12 @@
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
 import Docker from 'dockerode';
-import { logger } from '../../github-app/src/utils/logger.js';
+import { logger } from './logger.js';
 import {
   DEFAULT_TEST_SUITES,
   FLAKINESS_PATTERNS,
   FLAKINESS_SUGGESTIONS,
+} from './types/test-container.js';
+import type {
   FlakinessDetectionResult,
   TestExecutionRequest,
   TestExecutionResult,
@@ -55,8 +57,7 @@ export class FreestyleClient {
     });
 
     try {
-      // Get test suite configuration
-      const testSuiteConfig = this.getTestSuiteConfig(request.testSuite);
+      const testSuiteConfig = this.getTestSuiteConfig(request);
 
       // Create deterministic container
       const containerId = await this.createDeterministicContainer(
@@ -252,7 +253,7 @@ export class FreestyleClient {
         ),
       });
 
-      const stream = await exec.start();
+      const stream = await exec.start({});
       let output = '';
       let errorOutput = '';
 
@@ -266,7 +267,7 @@ export class FreestyleClient {
           });
         }, testSuiteConfig.timeout);
 
-        stream.on('data', chunk => {
+        stream.on('data', (chunk: Buffer) => {
           const data = chunk.toString();
           if (data.includes('error') || data.includes('Error')) {
             errorOutput += data;
@@ -289,7 +290,7 @@ export class FreestyleClient {
           });
         });
 
-        stream.on('error', error => {
+        stream.on('error', (error: Error) => {
           clearTimeout(timeout);
           reject(error);
         });
@@ -314,7 +315,7 @@ export class FreestyleClient {
       error?: string;
       output?: string;
     }>,
-    testSuiteConfig: TestSuiteConfig
+    _testSuiteConfig: TestSuiteConfig
   ): FlakinessDetectionResult {
     const successfulRuns = retryResults.filter(result => result.success);
     const failedRuns = retryResults.filter(result => !result.success);
@@ -336,8 +337,13 @@ export class FreestyleClient {
       signature,
       stackHash,
       seed: Date.now(), // Use timestamp as seed
-      retryResults,
-      suggestions,
+      retryResults: retryResults.map((r, i) => ({
+        attempt: i + 1,
+        success: r.success,
+        duration: r.duration,
+        error: r.error,
+      })),
+      suggestions: [...suggestions],
     };
   }
 
@@ -473,15 +479,29 @@ export class FreestyleClient {
   }
 
   /**
-   * Get test suite configuration
+   * Resolve command and retry settings from suite name or `customShellCommand`.
    */
-  private getTestSuiteConfig(testSuite: string): TestSuiteConfig {
+  private getTestSuiteConfig(request: TestExecutionRequest): TestSuiteConfig {
+    const custom = request.customShellCommand?.trim();
+    if (custom) {
+      return {
+        name: 'custom',
+        command: ['sh', '-c', custom],
+        timeout: request.containerConfig.timeout,
+        retryCount: request.retryCount,
+        flakinessThreshold: this.flakinessThreshold,
+        deterministic: false,
+        seedRequired: false,
+      };
+    }
+
+    const testSuite = request.testSuite;
     return (
       DEFAULT_TEST_SUITES[testSuite] || {
         name: testSuite,
         command: ['npm', 'test'],
-        timeout: this.defaultTimeout,
-        retryCount: this.maxRetries,
+        timeout: request.containerConfig.timeout,
+        retryCount: request.retryCount,
         flakinessThreshold: this.flakinessThreshold,
         deterministic: true,
         seedRequired: false,
@@ -570,8 +590,8 @@ export class FreestyleClient {
     const match = memory.match(/^(\d+)([kmg])?$/i);
     if (!match) return 512 * 1024 * 1024; // Default 512MB
 
-    const value = parseInt(match[1]);
-    const unit = match[2]?.toLowerCase();
+    const value = parseInt(match[1]!, 10);
+    const unit = (match[2] ?? '').toLowerCase();
 
     switch (unit) {
       case 'k':

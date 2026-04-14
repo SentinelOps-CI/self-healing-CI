@@ -100,7 +100,7 @@ export class LogRedactor {
     // Private keys
     /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----/gi,
     // URLs with tokens
-    /https?:\/\/[^\/\s]+@[^\s]+/gi,
+    /https?:\/\/[^/\s]+@[^\s]+/gi,
     // Environment variables with secrets
     /(?:export\s+)?([A-Z_]+)=(?:['"]?)([^'"]{20,})(?:['"]?)/gi,
   ];
@@ -157,7 +157,7 @@ export class FailureReportBuilder {
     version: 'v1',
     timestamp: new Date().toISOString(),
     logs: { redactedSecrets: [] },
-    gitContext: { changedFiles: [] },
+    gitContext: { changedFiles: [], headSha: '', baseSha: '' },
     testOutput: { failedTests: [] },
     environment: { environmentVariables: [] },
     previousAttempts: [],

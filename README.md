@@ -1,266 +1,183 @@
-# Self-Healing CI System
+# Self-Healing CI
 
-A state-of-the-art Continuous Integration system that automatically diagnoses, patches, and validates code issues using AI-powered analysis and formal verification.
+**React to broken CI with context, diagnosis, and an automated fix path** — a GitHub App plus Temporal worker that collects failure data, asks Claude for a root cause and patch, applies changes via GitHub or Morph, runs tests and optional proof checks, then updates status or merges when your policy allows.
 
-## Architecture
+---
 
+## At a glance
+
+|                   |                                                                                   |
+| :---------------- | :-------------------------------------------------------------------------------- |
+| **Trigger**       | Failed GitHub Actions workflow runs (with allowlists, deduplication, and budgets) |
+| **Orchestration** | [Temporal](https://temporal.io/) — durable workflows and retries                  |
+| **AI**            | Anthropic Claude for structured diagnosis                                         |
+| **Patching**      | Unified diffs on a branch / PR, or Morph HTTP when configured                     |
+| **Verification**  | Tests (HTTP, Docker Freestyle, or local shell) · optional Lean proofs             |
+| **State**         | Redis for dedup and workflow state when `REDIS_URL` is set                        |
+
+---
+
+## How it flows
+
+```mermaid
+flowchart LR
+  GH[Failed workflow run]
+  APP[GitHub App]
+  TMP[(Temporal)]
+  WF[SelfHealingWorkflow]
+  D[Diagnose]
+  P[Patch]
+  T[Test]
+  X[Merge / status]
+
+  GH --> APP
+  APP --> TMP
+  TMP --> WF
+  WF --> D --> P --> T --> X
 ```
-GitHub App → Temporal → Claude/Morph/Freestyle/Lean → GitHub Merge
-     ↓           ↓              ↓
-  Webhooks   Workflows    AI Services
-     ↓           ↓              ↓
-  Event Bus   Activities   Validation
-     ↓           ↓              ↓
-  Diagnosis   Patching    Proofs
-     ↓           ↓              ↓
-  Auto-Merge  Monitoring  Assurance
-```
 
-## Services
+From here you can go deeper: [full architecture](docs/architecture/system.md), [docs index](docs/README.md), [security overview](docs/security/README.md).
 
-### Core Services
+---
 
-- **GitHub App**: Webhook listener and event processing
-- **Temporal Worker**: Workflow orchestration and state management
+## Prerequisites
 
-### AI-Powered Services
+| Requirement  | Notes                                                                                                                        |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Node.js**  | 20+                                                                                                                          |
+| **pnpm**     | 8+ (see [`package.json`](package.json) `packageManager`)                                                                     |
+| **Temporal** | Server reachable from the worker ([CLI dev server](https://docs.temporal.io/cli#start-a-local-development-server) or hosted) |
+| **Redis**    | Recommended; optional with degraded dedup/state                                                                              |
+| **Docker**   | Optional — for `SELF_HEALING_TEST_EXECUTION_MODE=docker` and Freestyle bind mounts                                           |
 
-- **Claude Service**: Enhanced AI diagnosis with streaming and token management
-- **Morph Service**: Automated code patching with compilation validation
-- **Freestyle Service**: Deterministic test containers with flakiness detection
-- **Lean Service**: Formal invariant proofs and theorem validation
-
-### Infrastructure Services
-
-- **Monitoring**: Prometheus, Grafana, Jaeger for observability
-- **Security**: OIDC, OPA, cosign for supply chain security
-- **Documentation**: Auto-generated runbooks and architecture diagrams
-
-## Installation
-
-### Prerequisites
-
-- Node.js 20+
-- Docker with Docker Compose
-- Rust toolchain (for Lean 4)
-- Python 3.12+ (for static analysis)
-
-### Quick Start
+### Redis in one command
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/self-healing-ci.git
-cd self-healing-ci
+docker compose up -d redis
+```
 
-# Install dependencies
+Listens on `127.0.0.1:6379` by default — matches `REDIS_URL` in [.env.example](.env.example). Temporal is **not** included in Compose; run it separately.
+
+---
+
+## Quick start
+
+**1. Install and configure**
+
+```bash
 pnpm install
-
-# Set up environment variables
 cp .env.example .env
-# Edit .env with your configuration
+# Edit .env — see tables below
+```
 
-# Start development environment
-pnpm dev
+**2. Build and validate**
 
-# Run tests
-pnpm test
-
-# Build for production
+```bash
 pnpm build
+pnpm validate
 ```
 
-### Environment Variables
+**3. Run the app** (with Temporal and Redis already up)
 
 ```bash
-# GitHub App Configuration
-GITHUB_APP_ID=your_app_id
-GITHUB_APP_PRIVATE_KEY=your_private_key
-GITHUB_WEBHOOK_SECRET=your_webhook_secret
-
-# AI Services
-ANTHROPIC_API_KEY=your_claude_api_key
-MORPH_API_KEY=your_morph_api_key
-MORPH_API_URL=https://api.morph.dev
-
-# Infrastructure
-TEMPORAL_SERVER_URL=temporal:7233
-REDIS_URL=redis://localhost:6379
-DOCKER_SOCKET=/var/run/docker.sock
-
-# Security
-OIDC_PROVIDER_URL=your_oidc_provider
-OIDC_CLIENT_ID=your_client_id
-OIDC_CLIENT_SECRET=your_client_secret
-
-# Monitoring
-PROMETHEUS_URL=http://localhost:9090
-GRAFANA_URL=http://localhost:3000
-JAEGER_URL=http://localhost:16686
+pnpm --filter @self-healing-ci/github-app dev
+pnpm --filter @self-healing-ci/temporal-worker dev
 ```
 
-## Development
+---
 
-### Project Structure
+## Configuration
+
+Copy [.env.example](.env.example) to `.env` and fill values. Grouped for scanning:
+
+### GitHub, AI, Temporal
+
+| Variable                                                           | Role                                                 |
+| ------------------------------------------------------------------ | ---------------------------------------------------- |
+| `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`     | GitHub App authentication and webhooks               |
+| `ANTHROPIC_API_KEY`                                                | Claude (skip real calls with `SELF_HEALING_DRY_RUN`) |
+| `TEMPORAL_SERVER_URL`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE` | Worker and client                                    |
+| `REDIS_URL`                                                        | Dedup and workflow state                             |
+
+### Self-healing and patching
+
+| Variable                                                                  | Role                                                                                             |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `SELF_HEALING_ENABLED`, `SELF_HEALING_DRY_RUN`, `SELF_HEALING_AUTO_MERGE` | Feature gates                                                                                    |
+| `SELF_HEALING_WORKFLOW_ALLOWLIST`                                         | Comma-separated substrings matched against workflow name (default tokens: ci, test, build, lint) |
+| `PATCH_BACKEND`                                                           | `github` (default) or `morph`                                                                    |
+| `MORPH_API_URL`, `MORPH_API_KEY`                                          | Morph HTTP when `PATCH_BACKEND=morph`                                                            |
+
+### Tests and proofs
+
+| Variable                                                                                 | Role                                               |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `SELF_HEALING_TEST_EXECUTION_MODE`                                                       | `http` · `docker` · `local` · `auto` · `disabled`  |
+| `SELF_HEALING_TEST_COMMAND`, `SELF_HEALING_TEST_TIMEOUT_MS`, `SELF_HEALING_TEST_WORKDIR` | Command, timeout, checkout path                    |
+| `FREESTYLE_USE_DOCKER`, `FREESTYLE_HOST_WORKSPACE`, `FREESTYLE_DOCKER_*`                 | Docker test backend (`@self-healing-ci/freestyle`) |
+| `FREESTYLE_API_URL`, `FREESTYLE_API_KEY`                                                 | Remote Freestyle API (`POST /v1/test-runs`)        |
+| `LEAN_PROOFS_EXECUTION_MODE`, `LEAN_LOCAL_WORKSPACE`, `LEAN_LOCAL_TIMEOUT_MS`            | Lean: HTTP, local package, or `auto`               |
+| `LEAN_API_URL`, `LEAN_API_KEY`                                                           | Remote Lean API (`POST /v1/proofs/validate`)       |
+
+### Observability
+
+| Variable                                             | Role                                               |
+| ---------------------------------------------------- | -------------------------------------------------- |
+| `CLOUDEVENTS_INGEST_URL`, `CLOUDEVENTS_INGEST_TOKEN` | Optional CloudEvents HTTP ingest                   |
+| `METRICS_PORT`, `JAEGER_ENDPOINT`, `LOG_LEVEL`       | Metrics server and tracing hooks (see worker docs) |
+
+---
+
+## Repository layout
 
 ```
-self-healing-ci/
-├── apps/
-│   ├── github-app/          # GitHub App webhook handler
-│   └── temporal-worker/     # Workflow orchestration
-├── services/
-│   ├── claude/             # Enhanced AI diagnosis
-│   ├── morph/              # Code patching service
-│   ├── freestyle/          # Test container service
-│   └── lean/               # Formal verification
-├── docs/                   # Documentation
-├── scripts/                # Utility scripts
-└── tests/                  # Test suites
+apps/
+  github-app/           Webhooks, Probot, Temporal workflow starts
+  temporal-worker/      Workflows, activities, metrics HTTP server
+services/
+  claude/               Claude client and failure types
+  morph/                Patch validation and Morph-oriented helpers
+  freestyle/            Docker / HTTP test execution
+  lean/                 Proof validation (local or HTTP)
+  static-analysis/      Lint / analysis helpers
+  fuzzing/              Fuzzing scaffolding
+  attestation/          Attestation-oriented code
+docs/                   Architecture and security write-ups
+scripts/                e.g. security-audit.js
+docker-compose.yml      Local Redis (default)
 ```
 
-### Development Commands
+---
 
-```bash
-# Start all services
-pnpm dev
+## Scripts
 
-# Run specific service
-pnpm dev:github-app
-pnpm dev:temporal-worker
+| Command               | What it does                                                                                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `pnpm build`          | Build all workspaces                                                                                             |
+| `pnpm test`           | Tests in every package                                                                                           |
+| `pnpm test:coverage`  | Tests with coverage                                                                                              |
+| `pnpm lint`           | ESLint across packages                                                                                           |
+| `pnpm type-check`     | `tsc --noEmit` everywhere                                                                                        |
+| `pnpm format`         | Prettier check                                                                                                   |
+| `pnpm validate`       | lint + type-check + test                                                                                         |
+| `pnpm ci`             | Same pipeline as [CI](.github/workflows/ci.yml): install, build claude + freestyle + lean, typecheck, lint, test |
+| `pnpm security:audit` | Repository security audit script                                                                                 |
+| `pnpm security:check` | Audit script plus `pnpm audit`                                                                                   |
 
-# Run tests
-pnpm test
-pnpm test:coverage
-
-# Lint and format
-pnpm lint
-pnpm format
-
-# Type checking
-pnpm type-check
-
-# Build all packages
-pnpm build
-```
-
-### Testing
-
-```bash
-# Unit tests
-pnpm test:unit
-
-# Integration tests
-pnpm test:integration
-
-# End-to-end tests
-pnpm test:e2e
-
-# Proof validation
-pnpm proofs:validate
-
-# Security scans
-pnpm security:scan
-```
-
-## Monitoring
-
-### Metrics
-
-- **MTTR (Mean Time To Recovery)**: Target ≤ 5min p95
-- **Diagnosis Accuracy**: Target ≥ 95%
-- **Proof Success Rate**: Target ≥ 95%
-- **Patch Success Rate**: Target ≥ 90%
-
-### Dashboards
-
-- **Operational Dashboard**: Real-time system health and performance
-- **Security Dashboard**: Vulnerability tracking and compliance status
-- **Quality Dashboard**: Test results and proof validation metrics
-
-### Alerts
-
-- **Critical**: MTTR > 10min, proof failure rate > 5%
-- **Warning**: Diagnosis accuracy < 95%, patch success rate < 90%
-- **Info**: New vulnerability detected, security scan completed
-
-## Security
-
-### Authentication
-
-- **OIDC Integration**: Short-lived tokens for all external services
-- **GitHub App**: Signed commits and verified merges
-- **Service Mesh**: mTLS between all internal services
-
-### Authorization
-
-- **RBAC**: Role-based access control for all operations
-- **Policy Engine**: OPA for fine-grained policy enforcement
-- **Audit Logging**: Complete audit trail for all actions
-
-### Supply Chain Security
-
-- **SLSA v1**: Full provenance tracking
-- **Cosign**: Image signing and verification
-- **SBOM**: Software bill of materials for all dependencies
-
-## Documentation
-
-### Runbooks
-
-- [How to triage when agent loops](docs/runbooks/agent-loops.md)
-- [Escalate Claude hallucination](docs/runbooks/claude-hallucination.md)
-- [Rotate Morph credentials](docs/runbooks/rotate-credentials.md)
-
-### Architecture
-
-- [System Architecture](docs/architecture/system.md)
-- [Data Flow](docs/architecture/data-flow.md)
-- [Security Model](docs/architecture/security.md)
-
-### API Reference
-
-- [GitHub App API](docs/api/github-app.md)
-- [Temporal Workflows](docs/api/temporal.md)
-- [AI Services API](docs/api/ai-services.md)
+---
 
 ## Contributing
 
-### Development Workflow
+Branch from `main`, run `pnpm validate` before opening a PR. Commits follow [Conventional Commits](https://www.conventionalcommits.org/) (enforced via Commitlint — `commitlint.config.js`).
 
-1. Create feature branch: `git checkout -b feat/your-feature`
-2. Make changes and commit: `git commit -m 'feat: your feature'`
-3. Push and create PR: `git push origin feat/your-feature`
-4. Run tests: `pnpm test`
-5. Validate: `pnpm validate`
-
-### Code Quality
-
-- **TypeScript**: Strict type checking enabled
-- **ESLint**: Comprehensive linting rules
-- **Prettier**: Consistent code formatting
-- **Husky**: Pre-commit hooks for quality gates
-
-### Testing Strategy
-
-- **Unit Tests**: 90%+ coverage required
-- **Integration Tests**: All service interactions
-- **End-to-End Tests**: Full workflow validation
-- **Proof Tests**: Formal verification of critical paths
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+[MIT](LICENSE)
 
-## Acknowledgments
+---
 
-- **Anthropic**: Claude AI for intelligent diagnosis
-- **Morph**: Automated code patching platform
-- **Lean 4**: Formal verification framework
-- **Temporal**: Workflow orchestration
-- **GitHub**: Platform integration and automation
+## Security
 
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/your-org/self-healing-ci/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/self-healing-ci/discussions)
-- **Documentation**: [Project Wiki](https://github.com/your-org/self-healing-ci/wiki)
-- **Security**: [Security Policy](SECURITY.md)
+Report vulnerabilities using [SECURITY.md](SECURITY.md).

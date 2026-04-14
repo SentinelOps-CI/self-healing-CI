@@ -20,8 +20,6 @@
   "dependencies": {
     "@types/node": "^20.0.0",
     "axios": "^1.6.0",
-    "cargo-fuzz": "^0.1.0",
-    "fuzzilli": "^0.1.0",
     "glob": "^10.3.0",
     "chalk": "^5.3.0",
     "ora": "^8.0.0",

@@ -1,77 +1,52 @@
 ## Description
 
-<!-- Provide a clear and concise description of the changes -->
+<!-- Clear description of the change -->
 
-## Type of Change
+## Type of change
 
-- [ ] 🐛 Bug fix (non-breaking change which fixes an issue)
-- [ ] ✨ New feature (non-breaking change which adds functionality)
-- [ ] 💥 Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] 📚 Documentation update
-- [ ] 🔧 Refactoring (no functional changes)
-- [ ] ⚡ Performance improvement
-- [ ] 🧪 Test addition or update
-- [ ] 🔒 Security improvement
-- [ ] 🏗️ Build system change
-- [ ] 🔄 CI/CD change
-- [ ] 🎨 Style change (formatting, missing semi colons, etc; no logic change)
-- [ ] 🧹 Chore (updates to dependencies, etc)
+- [ ] Bug fix (non-breaking)
+- [ ] New feature (non-breaking)
+- [ ] Breaking change
+- [ ] Documentation only
+- [ ] Refactor (no behavior change)
+- [ ] Performance
+- [ ] Tests
+- [ ] Security
+- [ ] Build / CI
+- [ ] Style (formatting only)
+- [ ] Chore (deps, tooling)
 
-## Scope
+## Scope (check all that apply)
 
-<!-- Select the scope of your changes -->
-
-- [ ] github-app - GitHub App listener and webhook handling
-- [ ] temporal - Temporal.io workflow orchestration
-- [ ] claude - Claude AI integration for diagnosis
-- [ ] morph - Morph API integration for code patching
-- [ ] freestyle - Freestyle testing framework
-- [ ] lean - Lean 4 formal verification
-- [ ] diagnosis - Root cause analysis engine
-- [ ] patching - Automated code patching
-- [ ] testing - Test framework and execution
-- [ ] proofs - Formal proof generation
-- [ ] merge - Auto-merge functionality
-- [ ] observability - Metrics, tracing, and monitoring
-- [ ] security - Security hardening and compliance
-- [ ] docs - Documentation updates
-- [ ] deps - Dependency updates
+- [ ] `apps/github-app`
+- [ ] `apps/temporal-worker`
+- [ ] `services/claude`
+- [ ] `services/morph`
+- [ ] `services/freestyle`
+- [ ] `services/lean`
+- [ ] Docs
+- [ ] CI / GitHub Actions
+- [ ] Root tooling or config
 
 ## Testing
 
-<!-- Describe the tests that you ran to verify your changes -->
+<!-- How you verified the change -->
 
-- [ ] Unit tests pass
-- [ ] Integration tests pass
-- [ ] End-to-end tests pass
-- [ ] Type checking passes
-- [ ] Linting passes
-- [ ] Security scans pass
-- [ ] Performance benchmarks pass
+- [ ] Unit tests pass (`pnpm test` where relevant)
+- [ ] Typecheck passes (`pnpm type-check` or package `tsc --noEmit`)
+- [ ] Lint passes (`pnpm lint`)
+- [ ] Ran full `pnpm validate` at repo root
 
 ## Checklist
 
-- [ ] My code follows the style guidelines of this project
-- [ ] I have performed a self-review of my own code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] I have made corresponding changes to the documentation
-- [ ] My changes generate no new warnings
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
-- [ ] Any dependent changes have been merged and published in downstream modules
-- [ ] I have updated the changelog if appropriate
-- [ ] I have added/updated security documentation if applicable
+- [ ] Self-review completed
+- [ ] Documentation updated (README / `docs/` if behavior or env vars changed)
+- [ ] No new avoidable warnings; tests added or updated where appropriate
 
-## Breaking Changes
+## Breaking changes
 
-<!-- If this PR contains breaking changes, describe them here -->
+<!-- If any, describe migration -->
 
-## Additional Notes
+## Related issues
 
-<!-- Add any other context about the pull request here -->
-
-## Related Issues
-
-<!-- Link to any related issues -->
-
-Closes #
+<!-- Closes # -->

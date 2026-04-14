@@ -1,79 +1,54 @@
-# Security Policy
+# Security policy
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-We take the security of Self-Healing CI seriously. If you believe you have found a security vulnerability, please report it to us as described below.
+We take security seriously. If you believe you have found a security vulnerability in this project, please report it responsibly.
 
-### Reporting Process
+### Process
 
-1. **DO NOT** create a public GitHub issue for the vulnerability.
-2. **DO** email your findings to [security@self-healing-ci.com](mailto:security@self-healing-ci.com).
-3. **DO** include a detailed description of the vulnerability, including:
-   - Type of vulnerability (e.g., XSS, CSRF, SQL injection, etc.)
-   - Steps to reproduce the issue
-   - Potential impact
-   - Suggested fix (if any)
+1. **Do not** open a public GitHub issue for undisclosed vulnerabilities.
+2. Email details to the address listed in your organization’s security contact, or open a **private** security advisory on GitHub if enabled for this repository.
+3. Include: type of issue, steps to reproduce, impact, and suggested fix if you have one.
 
-### What to Expect
+### What to expect
 
-- You will receive an acknowledgment within 48 hours
-- We will investigate and provide updates on our progress
-- We will work with you to understand and address the issue
-- Once fixed, we will credit you in our security advisories (unless you prefer to remain anonymous)
+- Acknowledgment as soon as practical (goal: within a few business days for actively maintained forks).
+- Coordination on fix and disclosure timeline.
 
-### Responsible Disclosure Timeline
+### Responsible disclosure
 
-- **Day 0**: Vulnerability reported
-- **Day 1**: Acknowledgment and initial assessment
-- **Day 7**: Status update and timeline
-- **Day 30**: Target fix date
-- **Day 45**: Public disclosure (if not fixed)
+Give maintainers time to release a fix before public discussion. Exact timelines depend on severity and maintainer availability.
 
 ### Scope
 
-This security policy applies to:
+- Application code in this repository
+- Documented default deployments and configuration
+- Dependencies (also report upstream where appropriate)
 
-- All code in the Self-Healing CI repository
-- All dependencies and third-party integrations
-- All deployment environments
-- All API endpoints and services
+### Security-related capabilities in this codebase
 
-### Security Features
+What is **actually implemented** today includes, among other things:
 
-Our system includes several security measures:
+- GitHub webhook signature verification (see GitHub App code paths).
+- Input sanitization helpers for webhook-adjacent handling.
+- Environment-based configuration; no secrets should be committed (see `.env.example`).
+- Scripts: `pnpm security:audit`, `pnpm audit`, and CI steps that run tests and typecheck.
 
-- **OIDC-backed secrets**: Short-lived tokens instead of long-lived PATs
-- **Sandboxed LLM calls**: Policy-enforced egress proxy for Claude API
-- **Supply chain attestation**: SLSA v1 provenance and cosign signatures
-- **Static analysis**: Automated security scanning with semgrep
-- **Differential fuzzing**: Automated vulnerability detection
-- **Audit logging**: Full prompt/response logging (PII redacted)
+Items such as organization-wide OIDC for every integration, egress proxies for all LLM calls, or automated SLSA attestation in CI may be **partially** reflected in `services/*` or docs but are not guaranteed as production-complete unless you implement and verify them.
 
-### Security Best Practices
+### Best practices for contributors
 
-When contributing to this project:
+1. Do not commit secrets or real tokens.
+2. Run `pnpm validate` before submitting changes.
+3. Prefer least-privilege GitHub App permissions.
+4. Use HTTPS for external endpoints in production.
 
-1. Follow secure coding practices
-2. Never commit secrets or sensitive data
-3. Use dependency scanning tools
-4. Implement proper input validation
-5. Follow the principle of least privilege
-6. Use HTTPS for all external communications
-7. Implement proper error handling without information disclosure
+### Bug bounty
 
-### Bug Bounty
-
-We currently do not offer a formal bug bounty program, but we do appreciate and acknowledge security researchers who help improve our security posture.
+There is no formal bug bounty program tied to this template repository unless your organization announces one.
 
 ### Compliance
 
-This project aims to comply with:
+Framework references (SOC 2, NIST, GDPR) describe common goals; they are **not** certifications included with this repository.
 
-- SOC 2 Type II controls
-- OWASP Top 10
-- NIST Cybersecurity Framework
-- GDPR requirements (where applicable)
-
-### Updates
-
-This security policy is reviewed and updated quarterly. Last updated: December 2024.
+Last updated: April 2026.

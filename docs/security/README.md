@@ -1,58 +1,39 @@
-# Security Documentation
+# Security documentation
+
+This document summarizes security-related behavior implemented in this repository and how to operate it safely.
 
 ## Overview
 
-This document outlines the security measures implemented in the Self-Healing CI system to protect against common vulnerabilities and ensure secure operation.
+The Self-Healing CI codebase includes several defensive layers: webhook authenticity, input handling, rate limiting concepts, and operational scripts. It does **not** replace a full organizational security program, penetration testing, or production hardening checklist for your environment.
 
-## Security Features
+## Implemented features
 
-### 1. Input Validation and Sanitization
+### Input validation and sanitization
 
-The system implements comprehensive input validation and sanitization to prevent:
+`SecurityUtils` in the GitHub App (`apps/github-app/src/utils/security.ts`) provides:
 
-- **XSS (Cross-Site Scripting)**: Filters out script tags and JavaScript code
-- **SQL Injection**: Removes SQL keywords and patterns
-- **Buffer Overflow**: Limits input length and validates content
-- **Path Traversal**: Validates file paths and prevents directory traversal
+- Sanitization for suspicious patterns (scripts, common injection idioms, control characters via filtering).
+- Helpers used where untrusted strings are processed.
+
+Example (import path from another package may differ; use the app source as reference):
 
 ```typescript
-import { SecurityUtils } from '../utils/security.js';
+import { SecurityUtils } from './utils/security.js';
 
-// Validate and sanitize user input
 const sanitizedInput = SecurityUtils.validateAndSanitizeInput(userInput);
 ```
 
-### 2. Security Headers
+### Security-related HTTP behavior
 
-The application automatically adds security headers to all responses:
+Where the Fastify/Probot stack applies them, responses can include standard security headers and CORS restrictions derived from configuration. See application bootstrap in `apps/github-app` for what is actually wired.
 
-- **X-Content-Type-Options**: Prevents MIME type sniffing
-- **X-Frame-Options**: Prevents clickjacking attacks
-- **X-XSS-Protection**: Enables browser XSS filtering
-- **Referrer-Policy**: Controls referrer information
-- **Permissions-Policy**: Restricts browser features
-- **Content-Security-Policy**: Controls resource loading
-- **Strict-Transport-Security**: Enforces HTTPS (when enabled)
+### Rate limiting
 
-### 3. CORS Protection
+Rate limiting is configurable in spirit (`config/security.example.json`); ensure your deployment connects any limiter to real storage and thresholds for production.
 
-Cross-Origin Resource Sharing is configured to only allow trusted origins:
+### GitHub webhook validation
 
-- GitHub.com
-- GitHub API endpoints
-- Configurable allowed origins
-
-### 4. Rate Limiting
-
-Basic rate limiting is implemented to prevent abuse:
-
-- Configurable time windows
-- Request limits per window
-- IP-based identification
-
-### 5. GitHub Webhook Validation
-
-All GitHub webhooks are validated using HMAC signatures:
+Webhooks should be verified with the shared secret:
 
 ```typescript
 const isValid = SecurityUtils.validateGitHubWebhook(
@@ -62,172 +43,69 @@ const isValid = SecurityUtils.validateGitHubWebhook(
 );
 ```
 
-### 6. Environment Variable Security
+### Environment and secrets
 
-The system validates environment variables on startup:
+- Use `.env` locally (never commit it). Start from [.env.example](../../.env.example).
+- The custom audit script [`scripts/security-audit.js`](../../scripts/security-audit.js) checks common issues (dependencies, `.env` tracking, placeholder env files, etc.). Run `pnpm security:audit` from the repository root.
 
-- Required variables presence
-- Private key format validation
-- Webhook secret length validation
-- No hardcoded secrets
+### Error handling
 
-### 7. Error Handling
-
-Errors are handled securely to prevent information disclosure:
-
-- Generic error messages for clients
-- Detailed logging for administrators
-- PII redaction in logs
-- No stack traces exposed
+Prefer generic messages to clients and detailed structured logs server-side. Redact secrets in logs where Claude and GitHub clients already apply redaction helpers.
 
 ## Configuration
 
-### Security Configuration File
+Example security-related JSON lives at [`config/security.example.json`](../../config/security.example.json). Copy or merge patterns into your deployment configuration as appropriate; not every field may be read by the current server code—verify against `apps/github-app` before assuming a key takes effect.
 
-Create `config/security.json` based on `config/security.example.json`:
+### Environment variables (security-relevant)
 
-```json
-{
-  "security": {
-    "cors": {
-      "allowedOrigins": ["https://github.com", "https://api.github.com"]
-    },
-    "rateLimiting": {
-      "windowMs": 60000,
-      "maxRequests": 100
-    },
-    "inputValidation": {
-      "maxInputLength": 10000,
-      "maxPayloadSize": "10MB"
-    }
-  }
-}
-```
-
-### Environment Variables
-
-Required security-related environment variables:
+See [.env.example](../../.env.example) for the canonical list. Minimum for GitHub integration:
 
 ```bash
-# GitHub App Security
-GITHUB_APP_ID=your_app_id
-GITHUB_PRIVATE_KEY=your_private_key
-GITHUB_WEBHOOK_SECRET=your_webhook_secret
-
-# HTTPS Configuration (Optional)
-USE_HTTPS=true
-SSL_CERT_PATH=/path/to/certificate.pem
-SSL_KEY_PATH=/path/to/private-key.pem
-SSL_CA_PATH=/path/to/ca-bundle.pem
+GITHUB_APP_ID=
+GITHUB_PRIVATE_KEY=
+GITHUB_WEBHOOK_SECRET=
 ```
 
-## Security Audit
+Optional HTTPS and operational keys are documented in `.env.example` where applicable.
 
-### Running Security Checks
-
-The system includes automated security auditing:
+## Security audit (repository scripts)
 
 ```bash
-# Run comprehensive security audit
 pnpm security:audit
-
-# Check for dependency vulnerabilities
 pnpm audit
-
-# Run all security checks
 pnpm security:check
 ```
 
-### Security Score
+The audit script prints ASCII status lines (`[PASS]`, `[WARN]`, `[FAIL]`) and exits non-zero on critical findings.
 
-The security audit provides a score based on:
+## Best practices
 
-- Passed checks (secure configurations)
-- Warnings (potential improvements)
-- Critical issues (must be fixed)
+1. Never commit secrets; rotate GitHub App keys and webhook secrets if exposed.
+2. Run `pnpm audit` regularly and upgrade transitive dependencies deliberately.
+3. Restrict network access to the GitHub App and worker in production (firewall, private Temporal, Redis auth).
+4. Use least privilege for GitHub App permissions and installation scope.
 
-## Best Practices
+## Threat model (short)
 
-### 1. Environment Management
+| Concern                        | Mitigation in repo                                                        |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| Forged webhooks                | HMAC validation with `GITHUB_WEBHOOK_SECRET`                              |
+| Injection via webhook payloads | Validation/sanitization utilities; prefer strict schemas on new endpoints |
+| Dependency vulnerabilities     | `pnpm audit`, CI informational audit step                                 |
+| Leaked `.env`                  | `.gitignore`, security-audit script checks                                |
 
-- Never commit `.env` files
-- Use strong, unique secrets
-- Rotate secrets regularly
-- Use different secrets for different environments
+## Incident response
 
-### 2. Input Handling
+For **reporting vulnerabilities in this open-source project**, follow [SECURITY.md](../../SECURITY.md). For production incidents, use your own runbooks.
 
-- Always validate and sanitize input
-- Use parameterized queries
-- Implement proper error handling
-- Log security events
+## Compliance language
 
-### 3. Authentication & Authorization
-
-- Validate all webhook signatures
-- Implement proper session management
-- Use HTTPS in production
-- Implement least privilege access
-
-### 4. Monitoring & Logging
-
-- Monitor for suspicious activity
-- Log security events
-- Implement alerting
-- Regular security reviews
-
-## Threat Model
-
-### Identified Threats
-
-1. **Webhook Spoofing**: Mitigated by HMAC validation
-2. **XSS Attacks**: Mitigated by input sanitization
-3. **SQL Injection**: Mitigated by input validation
-4. **CSRF Attacks**: Mitigated by origin validation
-5. **Information Disclosure**: Mitigated by error handling
-6. **Rate Limiting Bypass**: Mitigated by request validation
-
-### Risk Assessment
-
-- **High Risk**: Webhook authentication, input validation
-- **Medium Risk**: CORS configuration, rate limiting
-- **Low Risk**: Logging, monitoring
-
-## Incident Response
-
-### Security Incident Process
-
-1. **Detection**: Automated monitoring and alerts
-2. **Assessment**: Evaluate scope and impact
-3. **Containment**: Isolate affected systems
-4. **Eradication**: Remove threat and vulnerabilities
-5. **Recovery**: Restore normal operations
-6. **Lessons Learned**: Update security measures
-
-### Contact Information
-
-For security issues:
-
-- **Email**: security@self-healing-ci.com
-- **Response Time**: 48 hours acknowledgment
-- **Disclosure Timeline**: 45 days for fixes
-
-## Compliance
-
-The system aims to comply with:
-
-- **OWASP Top 10**: Addresses all critical vulnerabilities
-- **SOC 2 Type II**: Security controls implementation
-- **NIST Cybersecurity Framework**: Risk management
-- **GDPR**: Data protection and privacy
-
-## Updates
-
-This security documentation is reviewed quarterly and updated as needed. Last updated: December 2024.
+References to SOC 2, GDPR, or other frameworks in marketing-style text are **aspirational** unless your deployment independently attests to them. This repository provides tooling hooks, not a certified compliance package.
 
 ## References
 
 - [OWASP Top 10](https://owasp.org/www-project-top-ten/)
-- [GitHub Webhook Security](https://docs.github.com/en/developers/webhooks-and-events/webhooks/securing-your-webhooks)
-- [Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP)
-- [Security Headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers#security)
+- [GitHub: Securing webhooks](https://docs.github.com/en/webhooks/using-webhooks/securing-your-webhooks)
+- [MDN: Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP)
+
+Last reviewed: April 2026.

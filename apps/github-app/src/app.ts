@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { Context, Probot } from 'probot';
 import { DeduplicationService } from './services/deduplication.js';
+import { workflowNameMatchesAllowlist } from './services/self-healing-policy.js';
 import { TemporalClient } from './services/temporal.js';
 import type { WorkflowRunEvent } from './types/workflow-run.js';
 import { logger } from './utils/logger.js';
@@ -32,6 +33,22 @@ export class SelfHealingCIApp {
 
     this.setupEventHandlers();
     this.setupHealthEndpoints();
+  }
+
+  /**
+   * Connect Redis, DynamoDB (if configured), and Temporal before serving traffic.
+   */
+  async initializeServices(): Promise<void> {
+    await this.deduplicationService.initialize().catch(err => {
+      logger.warn('Deduplication initialize failed (continuing)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    await this.temporalService.initialize().catch(err => {
+      logger.warn('Temporal initialize failed (workflows unavailable)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   private setupEventHandlers(): void {
@@ -207,19 +224,20 @@ export class SelfHealingCIApp {
       return false;
     }
 
-    // Check if this is a supported workflow
-    const supportedWorkflows = ['CI', 'test', 'build', 'lint'];
-    const workflowName = workflowRun.name.toLowerCase();
-
-    return supportedWorkflows.some(supported =>
-      workflowName.includes(supported)
-    );
+    return workflowNameMatchesAllowlist(workflowRun.name);
   }
 
   private async handleWorkflowFailure(event: WorkflowRunEvent): Promise<void> {
     try {
       const workflowRun = event.workflow_run;
       const repository = event.repository;
+
+      if (process.env['SELF_HEALING_ENABLED'] === 'false') {
+        logger.info('Self-healing disabled via SELF_HEALING_ENABLED', {
+          repository: repository.full_name,
+        });
+        return;
+      }
 
       logger.info('Triggering self-healing for workflow failure', {
         repository: repository.full_name,
@@ -228,7 +246,6 @@ export class SelfHealingCIApp {
         headSha: workflowRun.head_sha,
       });
 
-      // Check for duplicate processing
       const isDuplicate = await this.deduplicationService.isDuplicate(
         repository.full_name,
         workflowRun.id,
@@ -239,6 +256,21 @@ export class SelfHealingCIApp {
         logger.info('Skipping duplicate workflow failure', {
           repository: repository.full_name,
           workflowRunId: workflowRun.id,
+        });
+        return;
+      }
+
+      const maxPerDay = parseInt(
+        process.env['SELF_HEALING_MAX_RUNS_PER_DAY'] || '20',
+        10
+      );
+      const budgetOk = await this.deduplicationService.consumeSelfHealingBudget(
+        repository.full_name,
+        maxPerDay
+      );
+      if (!budgetOk) {
+        logger.info('Self-healing skipped: daily budget exceeded', {
+          repository: repository.full_name,
         });
         return;
       }

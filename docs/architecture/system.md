@@ -1,361 +1,133 @@
-# System Architecture
+# System architecture
 
-## Overview
+This document describes how Self-Healing CI is structured in this repository, how data flows through it, and which parts are **implemented** versus **roadmap** or optional deployment.
 
-The Self-Healing CI system is a state-of-the-art continuous integration platform that automatically diagnoses, patches, and validates code issues using AI-powered analysis and formal verification. The system follows a microservices architecture with event-driven workflows and comprehensive observability.
-
-## Architecture Diagram
+## High-level view
 
 ```mermaid
-graph TB
-    subgraph "GitHub"
-        GH[GitHub Repository]
-        GA[GitHub App]
-        WF[Workflow Runs]
-    end
+flowchart LR
+  subgraph github [GitHub]
+    WR[Failed workflow run]
+  end
+  subgraph app [apps/github-app]
+    WH[Webhooks / Probot]
+    TC[Temporal client]
+  end
+  subgraph temporal [Temporal]
+    W[SelfHealingWorkflow]
+    A[Activities]
+  end
+  subgraph libs [Workspace packages]
+    CL[services/claude]
+    FS[services/freestyle]
+    LN[services/lean]
+    MO[services/morph]
+  end
+  subgraph data [Optional infrastructure]
+    R[(Redis)]
+  end
 
-    subgraph "Event Pipeline"
-        WH[Webhook Handler]
-        EB[Event Bus]
-        ES[Event Store]
-    end
-
-    subgraph "Temporal Orchestration"
-        TW[Temporal Worker]
-        WF2[Workflow Engine]
-        AS[Activity Services]
-    end
-
-    subgraph "AI Services"
-        CL[Claude Service]
-        MP[Morph Service]
-        FS[Freestyle Service]
-        LN[Lean Service]
-    end
-
-    subgraph "Infrastructure"
-        DB[(Database)]
-        REDIS[(Redis Cache)]
-        DOCKER[Docker Engine]
-        MONITOR[Monitoring Stack]
-    end
-
-    subgraph "Security & Compliance"
-        OIDC[OIDC Provider]
-        OPA[OPA Policy Engine]
-        COSIGN[Cosign Signing]
-        AUDIT[Audit Logging]
-    end
-
-    GH --> GA
-    GA --> WH
-    WH --> EB
-    EB --> TW
-    TW --> WF2
-    WF2 --> AS
-
-    AS --> CL
-    AS --> MP
-    AS --> FS
-    AS --> LN
-
-    CL --> DB
-    MP --> DOCKER
-    FS --> DOCKER
-    LN --> DB
-
-    TW --> OIDC
-    CL --> OPA
-    MP --> COSIGN
-    FS --> AUDIT
-
-    MONITOR --> CL
-    MONITOR --> MP
-    MONITOR --> FS
-    MONITOR --> LN
+  WR --> WH
+  WH --> TC
+  TC --> W
+  W --> A
+  A --> CL
+  A --> FS
+  A --> LN
+  A --> MO
+  WH --> R
+  A --> R
 ```
 
-## Core Components
+The GitHub App reacts to failed workflow runs (subject to feature flags and allowlists), starts a Temporal workflow, and the worker runs activities that call GitHub APIs, Claude (`@self-healing-ci/claude`), optional Morph patching, test execution, proof validation, merge, and CloudEvents.
 
-### 1. GitHub App
+## Components
 
-- **Purpose**: Webhook listener and event processing
-- **Responsibilities**:
-  - Listen for workflow_run events
-  - Validate webhook signatures
-  - Transform events into internal format
-  - Trigger Temporal workflows
+### GitHub App (`apps/github-app`)
 
-### 2. Temporal Worker
+- Receives GitHub webhooks (workflow runs and related events).
+- Validates payloads and signatures using app secrets.
+- Applies **self-healing** gating: global enable flag, workflow name allowlist (`SELF_HEALING_WORKFLOW_ALLOWLIST`), deduplication, and daily budgets before starting `SelfHealingWorkflow` on Temporal.
 
-- **Purpose**: Workflow orchestration and state management
-- **Responsibilities**:
-  - Execute self-healing workflows
-  - Manage workflow state and retries
-  - Coordinate between AI services
-  - Handle error recovery and compensation
+### Temporal worker (`apps/temporal-worker`)
 
-### 3. AI Services
+- Hosts **workflows** (for example `SelfHealingWorkflow`) and **activities**: collect failure context, diagnose with Claude, apply patches (GitHub branch/PR or Morph HTTP when configured), run tests, validate proofs, merge, update status, emit CloudEvents.
+- Persists auxiliary state in **Redis** when `REDIS_URL` is set (deduplication and workflow state helpers).
+- Can expose a small **metrics HTTP server** (see `METRICS_PORT`): `/health`, `/ready`, `/metrics`, and alert-related routes (see `src/metrics-server.ts`).
 
-#### Claude Service (Phase 2)
+### Workspace services (libraries)
 
-- **Purpose**: Enhanced AI diagnosis with structured failure reports
-- **Features**:
-  - Token budgeting (16k max)
-  - Streaming responses
-  - Exponential backoff retries
-  - Automatic secret redaction
-  - Confidence scoring
+| Package                      | Role                                                                                                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@self-healing-ci/claude`    | Claude client, failure report building, diagnosis payloads                                                                                                          |
+| `@self-healing-ci/morph`     | Patch application with local validation helpers (used as a library; worker may also call a remote Morph HTTP API for `PATCH_BACKEND=morph`)                         |
+| `@self-healing-ci/freestyle` | Docker-based deterministic test runs (used when worker test mode is `docker` or when integrated via env; optional HTTP adapter documented for `POST /v1/test-runs`) |
+| `@self-healing-ci/lean`      | Lean proof validation workspace logic (used when `LEAN_PROOFS_EXECUTION_MODE=local` or via HTTP when API URL and key are set)                                       |
 
-#### Morph Service (Phase 3)
+These packages are **not** separate network microservices in the default layout: they are imported by the worker (and/or invoked via HTTP where documented).
 
-- **Purpose**: Automated code patching with compilation validation
-- **Features**:
-  - Multi-language compilation support (TypeScript, Rust, JavaScript)
-  - Safety assessment with risk scoring
-  - Retry logic with compiler diagnostics
-  - Patch validation and rollback
+## Data flows
 
-#### Freestyle Service (Phase 4)
-
-- **Purpose**: Deterministic test containers with flakiness detection
-- **Features**:
-  - Nix-flaked Docker images
-  - 3× retry with flakiness signature analysis
-  - Execution trace capture
-  - Deterministic test environments
-
-#### Lean Service (Phase 5)
-
-- **Purpose**: Formal invariant proofs and theorem validation
-- **Features**:
-  - Critical invariant encoding
-  - Automated theorem proving (2s CPU budget)
-  - AI-generated proof terms
-  - Proof maintenance and updates
-
-### 4. Infrastructure Services
-
-#### Monitoring Stack
-
-- **Prometheus**: Metrics collection and storage
-- **Grafana**: Dashboards and visualization
-- **Jaeger**: Distributed tracing
-- **OpenTelemetry**: Instrumentation
-
-#### Security Services
-
-- **OIDC Provider**: Short-lived token authentication
-- **OPA Policy Engine**: Fine-grained authorization
-- **Cosign**: Supply chain attestation
-- **Audit Logging**: Complete audit trail
-
-## Data Flow
-
-### 1. Failure Detection
+### 1. Failure to diagnosis
 
 ```mermaid
 sequenceDiagram
-    participant GH as GitHub
-    participant GA as GitHub App
-    participant TW as Temporal Worker
-    participant CL as Claude Service
+  participant GH as GitHub API
+  participant GA as GitHub App
+  participant TW as Temporal worker
+  participant CL as Claude service
 
-    GH->>GA: workflow_run (failed)
-    GA->>TW: Start SelfHealingWorkflow
-    TW->>CL: diagnoseFailure()
-    CL->>TW: DiagnosisResult
-    TW->>GA: Update workflow status
+  GA->>TW: Start workflow (installation, repo, run id, …)
+  TW->>GH: Collect logs, commits, metadata
+  TW->>CL: diagnoseFailure (failure report)
+  CL-->>TW: Root cause, patch suggestion, confidence
 ```
 
-### 2. Patch Application
+### 2. Patch application
 
-```mermaid
-sequenceDiagram
-    participant TW as Temporal Worker
-    participant MP as Morph Service
-    participant DOCKER as Docker Engine
-    participant GH as GitHub
+- **Default (`PATCH_BACKEND=github` or unset):** activities apply a unified diff on a branch and open/update a PR via the GitHub API (`github-healing-patch` and related code).
+- **Morph (`PATCH_BACKEND=morph` with `MORPH_API_KEY`):** worker posts to the configured Morph HTTP endpoint; the `@self-healing-ci/morph` package is available for richer local validation flows when you wire it that way.
 
-    TW->>MP: applyPatch()
-    MP->>DOCKER: Create workspace
-    MP->>DOCKER: Apply patch
-    MP->>DOCKER: Validate compilation
-    MP->>TW: PatchResult
-    TW->>GH: Create pull request
-```
+### 3. Tests (`run-tests` activity)
 
-### 3. Test Execution
+Execution mode is controlled by `SELF_HEALING_TEST_EXECUTION_MODE` and related variables:
 
-```mermaid
-sequenceDiagram
-    participant TW as Temporal Worker
-    participant FS as Freestyle Service
-    participant DOCKER as Docker Engine
+| Mode       | Behavior                                                                                                                          |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `http`     | `POST` to `{FREESTYLE_API_URL}/v1/test-runs` with bearer auth                                                                     |
+| `docker`   | `@self-healing-ci/freestyle` with Docker bind-mount (`FREESTYLE_HOST_WORKSPACE` or `SELF_HEALING_TEST_WORKDIR`)                   |
+| `local`    | Shell command in `SELF_HEALING_TEST_WORKDIR`                                                                                      |
+| `auto`     | Prefer HTTP if API URL and key are set; else optional Docker when `FREESTYLE_USE_DOCKER=true`; else local shell if workdir is set |
+| `disabled` | Skips meaningful execution (returns a clear error)                                                                                |
 
-    TW->>FS: executeTests()
-    FS->>DOCKER: Create deterministic container
-    FS->>DOCKER: Execute tests (3×)
-    FS->>FS: Detect flakiness
-    FS->>TW: TestExecutionResult
-```
+### 4. Proofs (`validate-proofs` activity)
 
-### 4. Proof Validation
+`LEAN_PROOFS_EXECUTION_MODE` selects **HTTP** (`LEAN_API_URL` + `LEAN_API_KEY`), **local** (`@self-healing-ci/lean` on the worker host), or **auto** (HTTP when configured, otherwise local).
 
-```mermaid
-sequenceDiagram
-    participant TW as Temporal Worker
-    participant LN as Lean Service
-    participant DB as Database
+### 5. Observability
 
-    TW->>LN: validateProofs()
-    LN->>DB: Load invariants
-    LN->>LN: Generate theorems
-    LN->>LN: Validate proofs (parallel)
-    LN->>TW: ProofValidationResult
-```
+- **Structured logging** via Winston in apps and services.
+- **Prometheus** metrics from the worker metrics server when enabled (`METRICS_PORT`).
+- **CloudEvents:** activities can POST CloudEvents 1.0 JSON to `CLOUDEVENTS_INGEST_URL` (optional bearer `CLOUDEVENTS_INGEST_TOKEN`).
+- **Jaeger / OpenTelemetry:** optional endpoints and instrumentation exist in dependencies; full production wiring is deployment-specific.
 
-## Security Architecture
+## Local development dependencies
 
-### Authentication
+- **Redis:** `docker compose up -d redis` (see root `docker-compose.yml`) exposes `6379` by default.
+- **Temporal:** not included in compose; use the [Temporal CLI dev server](https://docs.temporal.io/cli) or a hosted namespace.
 
-- **OIDC Integration**: All external service calls use short-lived tokens
-- **GitHub App**: Signed commits and verified merges
-- **Service Mesh**: mTLS between all internal services
+## Security (summary)
 
-### Authorization
+- Webhook HMAC verification, input sanitization helpers, and environment-based configuration are implemented in the GitHub App and shared utilities (see `docs/security/README.md` and `SECURITY.md`).
+- Advanced items such as full **OIDC** for every integration, **service mesh mTLS**, **OPA** everywhere, and **SLSA** attestation pipelines are **not** described as fully deployed in this repo; treat them as hardening goals unless your fork adds them.
 
-- **RBAC**: Role-based access control for all operations
-- **Policy Engine**: OPA for fine-grained policy enforcement
-- **Audit Logging**: Complete audit trail for all actions
+## Roadmap and optional stacks
 
-### Supply Chain Security
+The following appear in older diagrams or long-term plans but are **not** required for the core loop in this repository:
 
-- **SLSA v1**: Full provenance tracking
-- **Cosign**: Image signing and verification
-- **SBOM**: Software bill of materials for all dependencies
+- Kubernetes deployment manifests as the default
+- PostgreSQL as primary application store (Redis is used for specific worker/github-app state)
+- Full Prometheus/Grafana/Jaeger stacks (metrics endpoint exists; dashboards are yours to deploy)
+- Cosign/SLSA supply-chain automation beyond what individual `services/*` stubs may sketch
 
-## Observability
-
-### Metrics
-
-- **MTTR (Mean Time To Recovery)**: Target ≤ 5min p95
-- **Diagnosis Accuracy**: Target ≥ 95%
-- **Proof Success Rate**: Target ≥ 95%
-- **Patch Success Rate**: Target ≥ 90%
-
-### Tracing
-
-- **OpenTelemetry**: Full activity instrumentation
-- **Jaeger**: Distributed tracing visualization
-- **Correlation IDs**: End-to-end request tracking
-
-### Logging
-
-- **Structured Logging**: JSON format with correlation IDs
-- **Log Levels**: DEBUG, INFO, WARN, ERROR
-- **Audit Logging**: Security-relevant events
-- **PII Redaction**: Automatic sensitive data removal
-
-## Deployment Architecture
-
-### Development Environment
-
-```mermaid
-graph LR
-    subgraph "Local Development"
-        DC[Dev Container]
-        DOCKER[Docker Compose]
-        LOCAL[Local Services]
-    end
-```
-
-### Production Environment
-
-```mermaid
-graph TB
-    subgraph "Kubernetes Cluster"
-        subgraph "Ingress"
-            NGINX[Nginx Ingress]
-        end
-
-        subgraph "Application Layer"
-            GA[GitHub App]
-            TW[Temporal Worker]
-        end
-
-        subgraph "AI Services"
-            CL[Claude Service]
-            MP[Morph Service]
-            FS[Freestyle Service]
-            LN[Lean Service]
-        end
-
-        subgraph "Data Layer"
-            DB[(PostgreSQL)]
-            REDIS[(Redis)]
-        end
-
-        subgraph "Monitoring"
-            PROM[Prometheus]
-            GRAF[Grafana]
-            JAEGER[Jaeger]
-        end
-    end
-```
-
-## Performance Characteristics
-
-### Latency Targets
-
-- **Webhook Processing**: < 100ms
-- **Diagnosis**: < 30s
-- **Patch Application**: < 60s
-- **Test Execution**: < 300s
-- **Proof Validation**: < 10s
-
-### Throughput Targets
-
-- **Concurrent Workflows**: 100
-- **Parallel Proofs**: 4 per CPU core
-- **Container Executions**: 50 concurrent
-- **API Requests**: 1000 req/s
-
-### Resource Requirements
-
-- **CPU**: 8 cores minimum
-- **Memory**: 16GB minimum
-- **Storage**: 100GB SSD
-- **Network**: 1Gbps
-
-## Failure Handling
-
-### Retry Strategies
-
-- **Exponential Backoff**: For transient failures
-- **Circuit Breaker**: For external service failures
-- **Dead Letter Queues**: For unprocessable events
-- **Compensation Logic**: For rollback scenarios
-
-### Error Recovery
-
-- **Automatic Rollback**: Failed patches are automatically reverted
-- **State Recovery**: Temporal handles workflow state recovery
-- **Data Consistency**: Event sourcing ensures data consistency
-- **Monitoring Alerts**: Immediate notification of failures
-
-## Compliance & Governance
-
-### SOC 2 Compliance
-
-- **CCF Controls**: Mapped to all system components
-- **Access Control**: RBAC with audit logging
-- **Change Management**: Automated with approval workflows
-- **Incident Response**: Automated detection and response
-
-### Data Protection
-
-- **PII Redaction**: Automatic sensitive data removal
-- **Encryption**: Data at rest and in transit
-- **Data Retention**: Configurable retention policies
-- **Audit Trails**: Complete action logging
+Refer to root `README.md` and `.env.example` for what you must configure to run the system end to end.

@@ -1,121 +1,70 @@
-# Temporal Worker
+# Temporal worker (`@self-healing-ci/temporal-worker`)
 
-This is the Temporal worker for the Self-Healing CI system. It orchestrates workflows that automatically diagnose, patch, test, and merge fixes for CI failures.
+Orchestrates **SelfHealingWorkflow** and activities: collect failure data, diagnose with Claude, apply patches, run tests, validate proofs, merge, update status, and emit CloudEvents.
 
-## Features
+Configuration is shared with the rest of the monorepo: copy the root [.env.example](../../.env.example) to `.env` and set Temporal, GitHub App, Anthropic, Redis, and self-healing variables there.
 
-- **Failure Diagnosis**: Uses Claude AI to analyze CI failures and identify root causes
-- **Automated Patching**: Applies fixes using Morph API
-- **Test Execution**: Runs tests using Freestyle API
-- **Proof Validation**: Validates formal proofs using Lean 4
-- **Auto-Merge**: Automatically merges successful fixes
-- **Monitoring**: Comprehensive metrics and alerting
+## Requirements
 
-## Setup
+- Node.js 20+
+- pnpm (monorepo uses `pnpm` from the repository root)
+- Built workspace packages used by the worker, in particular:
+  - `pnpm --filter @self-healing-ci/claude run build`
+  - `pnpm --filter @self-healing-ci/freestyle run build`
+  - `pnpm --filter @self-healing-ci/lean run build`
 
-1. Install dependencies:
+CI builds these before typechecking the worker (see [.github/workflows/ci.yml](../../.github/workflows/ci.yml)).
 
-   ```bash
-   npm install
-   ```
-
-2. Create a `.env` file with your configuration:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-3. Configure the following environment variables:
-   - `TEMPORAL_TASK_QUEUE`: Task queue name (default: self-healing-ci)
-   - `TEMPORAL_NAMESPACE`: Temporal namespace (default: default)
-   - `MORPH_API_KEY`: API key for Morph code patching service
-   - `FREESTYLE_API_KEY`: API key for Freestyle testing service
-   - `LEAN_API_KEY`: API key for Lean 4 proof validation
-   - `OPSGENIE_API_KEY`: API key for alerting (optional)
-
-## Development
+## Commands (from repo root)
 
 ```bash
-# Build the project
-npm run build
-
-# Run in development mode with hot reload
-npm run dev
-
-# Run tests
-npm test
-
-# Type check
-npm run type-check
+pnpm --filter @self-healing-ci/temporal-worker run build
+pnpm --filter @self-healing-ci/temporal-worker run dev
+pnpm --filter @self-healing-ci/temporal-worker test
+pnpm --filter @self-healing-ci/temporal-worker run lint
+pnpm --filter @self-healing-ci/temporal-worker run type-check
 ```
 
-## Architecture
+## Environment (high level)
 
-The worker consists of several key components:
+| Area           | Variables                                                                                                                                                                     |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Temporal       | `TEMPORAL_SERVER_URL`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE`, TLS options                                                                                               |
+| GitHub         | `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY` (worker uses installation-scoped API as configured in activities)                                                                       |
+| Claude         | `ANTHROPIC_API_KEY`, `SELF_HEALING_DRY_RUN`                                                                                                                                   |
+| Redis          | `REDIS_URL` (optional)                                                                                                                                                        |
+| Patch backend  | `PATCH_BACKEND`, `MORPH_API_URL`, `MORPH_API_KEY` when using Morph HTTP                                                                                                       |
+| Tests          | `SELF_HEALING_TEST_EXECUTION_MODE`, `SELF_HEALING_TEST_COMMAND`, `SELF_HEALING_TEST_TIMEOUT_MS`, `SELF_HEALING_TEST_WORKDIR`, Freestyle HTTP or Docker vars (see root README) |
+| Proofs         | `LEAN_PROOFS_EXECUTION_MODE`, `LEAN_API_URL`, `LEAN_API_KEY`, `LEAN_LOCAL_WORKSPACE`                                                                                          |
+| CloudEvents    | `CLOUDEVENTS_INGEST_URL`, `CLOUDEVENTS_INGEST_TOKEN`                                                                                                                          |
+| Metrics server | `METRICS_PORT` (default `9090`)                                                                                                                                               |
 
-### Activities
+## Activities (non-exhaustive)
 
-- `diagnose-failure`: Analyzes CI failures using Claude AI
-- `apply-patch`: Applies code patches using Morph API
-- `run-tests`: Executes tests using Freestyle API
-- `validate-proofs`: Validates formal proofs using Lean 4
-- `merge-changes`: Merges successful fixes
-- `emit-cloud-event`: Emits events for monitoring
+| Activity                 | Role                                                                  |
+| ------------------------ | --------------------------------------------------------------------- |
+| `collect-failure-data`   | GitHub + logs context for diagnosis                                   |
+| `diagnose-failure`       | Claude via `@self-healing-ci/claude`                                  |
+| `apply-patch`            | GitHub branch/PR or Morph HTTP                                        |
+| `run-tests`              | Freestyle HTTP, Docker (`@self-healing-ci/freestyle`), or local shell |
+| `validate-proofs`        | Lean HTTP or `@self-healing-ci/lean` local                            |
+| `merge-changes`          | Merge PR when policy allows                                           |
+| `update-workflow-status` | GitHub status API                                                     |
+| `emit-cloud-event`       | Structured log + optional HTTP ingest                                 |
 
-### Workflows
+## Metrics HTTP server
 
-- `SelfHealingWorkflow`: Main orchestration workflow
+When started (see worker entrypoint and `metrics-server.ts`), the process can expose:
 
-### Services
+- `GET /health` — liveness-style JSON
+- `GET /ready` — readiness JSON
+- `GET /metrics` — Prometheus text
+- `GET /alerts/stats`, `GET /alerts/active` — alerting helpers
+- Additional routes for alert ack/resolve/cleanup and `GET /slo/:repository` (placeholder SLO payload unless wired to real metrics)
 
-- `alerting`: Handles alerting and SLO violations
-- `metrics`: Collects and exports Prometheus metrics
-- `tracing`: Distributed tracing with Jaeger
-- `workflow-state-store`: State persistence for deterministic replay
+Bind port via `METRICS_PORT`.
 
-## Monitoring
+## Further reading
 
-The worker exposes several endpoints:
-
-- `/health`: Health check
-- `/ready`: Readiness check
-- `/metrics`: Prometheus metrics
-- `/alerts/stats`: Alert statistics
-- `/alerts/active`: Active alerts
-
-## Deployment
-
-The worker is designed to be deployed as a container with:
-
-- Temporal Server connection
-- Redis for state storage
-- Jaeger for tracing
-- Prometheus for metrics
-
-## Error Handling
-
-The worker includes comprehensive error handling:
-
-- Automatic retries with exponential backoff
-- Circuit breakers for external API calls
-- Graceful degradation when services are unavailable
-- Detailed logging and tracing
-
-## Testing
-
-The worker includes unit tests and integration tests:
-
-```bash
-# Run all tests
-npm test
-
-# Run tests with coverage
-npm run test:coverage
-```
-
-## Contributing
-
-1. Follow the project's coding standards
-2. Add tests for new features
-3. Update documentation
-4. Ensure all checks pass before submitting PRs
+- [docs/architecture/system.md](../../docs/architecture/system.md)
+- Root [README.md](../../README.md)

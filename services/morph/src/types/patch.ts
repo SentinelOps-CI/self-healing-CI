@@ -36,6 +36,8 @@ export const PatchResultSchema = z.object({
   error: z.string().optional(),
   duration: z.number(),
   retryCount: z.number().default(0),
+  /** When compilation fails, workflows may re-run diagnosis using these diagnostics instead of a blind retry. */
+  orchestratorHint: z.string().optional(),
 });
 
 export type PatchResult = z.infer<typeof PatchResultSchema>;

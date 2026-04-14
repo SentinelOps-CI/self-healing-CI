@@ -1,6 +1,5 @@
-import { log, proxyActivities } from '@temporalio/workflow';
+import { log, proxyActivities, workflowInfo } from '@temporalio/workflow';
 import type * as activities from '../activities/index.js';
-import { WorkflowRunEvent } from '../types/workflow-run.js';
 
 // Define workflow state enum
 export enum WorkflowState {
@@ -26,32 +25,14 @@ export enum RootCause {
   UNKNOWN = 'UNKNOWN',
 }
 
-// Define workflow input interface
+/** Workflow input (matches github-app Temporal client). */
 export interface SelfHealingWorkflowInput {
-  workflowRunEvent: WorkflowRunEvent;
   repository: string;
   workflowRunId: number;
   headSha: string;
   branch: string;
   actor: string;
   installationId: number;
-  failureData: {
-    buildLogs: string;
-    baseSha: string;
-    changedFiles: string[];
-    commitMessage: string;
-    author: string;
-    duration: number;
-    failedTests: string[];
-    runner: string;
-    os: string;
-    nodeVersion: string;
-    dependencies: Record<string, string>;
-    environment: Record<string, string>;
-    memoryUsage: number;
-    cpuUsage: number;
-    networkRequests: number;
-  };
 }
 
 // Define workflow state interface
@@ -76,7 +57,18 @@ export interface WorkflowResult {
   metadata: Record<string, unknown>;
 }
 
-// Activity proxy
+const retryPolicy = {
+  initialInterval: '1s' as const,
+  maximumInterval: '1m' as const,
+  maximumAttempts: 3,
+  backoffCoefficient: 2,
+};
+
+const { collectFailureData } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '15 minutes',
+  retry: retryPolicy,
+});
+
 const {
   diagnoseFailure,
   applyPatch,
@@ -87,12 +79,7 @@ const {
   updateWorkflowStatus,
 } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
-  retry: {
-    initialInterval: '1s',
-    maximumInterval: '1m',
-    maximumAttempts: 3,
-    backoffCoefficient: 2,
-  },
+  retry: retryPolicy,
 });
 
 /**
@@ -102,14 +89,16 @@ export async function SelfHealingWorkflow(
   input: SelfHealingWorkflowInput
 ): Promise<WorkflowResult> {
   const startTime = Date.now();
-  const workflowId = log.info('Starting Self-Healing Workflow', {
-    workflowId: log.meta().workflowId,
+  const workflowId = workflowInfo().workflowId;
+  const healingBranch = `self-healing-ci/${input.workflowRunId}-${input.headSha.substring(0, 7)}`;
+
+  log.info('Starting Self-Healing Workflow', {
+    workflowId,
     repository: input.repository,
     workflowRunId: input.workflowRunId,
     headSha: input.headSha,
   });
 
-  // Initialize workflow state
   let currentState: WorkflowState = WorkflowState.NEW;
   let rootCause: RootCause | undefined;
   let patchApplied = false;
@@ -118,28 +107,43 @@ export async function SelfHealingWorkflow(
   let merged = false;
   let error: string | undefined;
 
+  const statusBase = {
+    repository: input.repository,
+    commitSha: input.headSha,
+    installationId: input.installationId,
+  };
+
   try {
-    // State: NEW → DIAGNOSE
     await updateWorkflowStatus({
       workflowId,
       state: WorkflowState.NEW,
       timestamp: new Date().toISOString(),
       data: { input },
+      ...statusBase,
     });
 
     log.info('Workflow state: NEW', { workflowId });
 
-    // State: DIAGNOSE
+    const collected = await collectFailureData({
+      repository: input.repository,
+      workflowRunId: input.workflowRunId,
+      headSha: input.headSha,
+      branch: input.branch,
+      installationId: input.installationId,
+    });
+
+    const failureData = collected.failureData;
+
     currentState = WorkflowState.DIAGNOSE;
     await updateWorkflowStatus({
       workflowId,
       state: currentState,
       timestamp: new Date().toISOString(),
+      ...statusBase,
     });
 
     log.info('Workflow state: DIAGNOSE', { workflowId });
 
-    // Emit CloudEvent for DIAGNOSE state
     await emitCloudEvent({
       eventType: 'workflow.state.diagnose',
       source: 'self-healing-ci',
@@ -153,8 +157,15 @@ export async function SelfHealingWorkflow(
       },
     });
 
-    // Perform diagnosis
-    const diagnosisResult = await diagnoseFailure(input);
+    const diagnosisResult = await diagnoseFailure({
+      repository: input.repository,
+      workflowRunId: input.workflowRunId,
+      headSha: input.headSha,
+      branch: input.branch,
+      installationId: input.installationId,
+      actor: input.actor,
+      failureData,
+    });
     rootCause = diagnosisResult.rootCause;
 
     log.info('Diagnosis completed', {
@@ -163,18 +174,17 @@ export async function SelfHealingWorkflow(
       confidence: diagnosisResult.confidence,
     });
 
-    // State: PATCH
     currentState = WorkflowState.PATCH;
     await updateWorkflowStatus({
       workflowId,
       state: currentState,
       timestamp: new Date().toISOString(),
       data: { diagnosisResult },
+      ...statusBase,
     });
 
     log.info('Workflow state: PATCH', { workflowId });
 
-    // Emit CloudEvent for PATCH state
     await emitCloudEvent({
       eventType: 'workflow.state.patch',
       source: 'self-healing-ci',
@@ -189,7 +199,6 @@ export async function SelfHealingWorkflow(
       },
     });
 
-    // Apply patch if diagnosis was successful
     if (
       diagnosisResult.rootCause !== RootCause.UNKNOWN &&
       diagnosisResult.patch
@@ -201,6 +210,7 @@ export async function SelfHealingWorkflow(
         patch: diagnosisResult.patch,
         rootCause: diagnosisResult.rootCause,
         installationId: input.installationId,
+        workflowRunId: input.workflowRunId,
       });
 
       patchApplied = patchResult.success;
@@ -218,18 +228,17 @@ export async function SelfHealingWorkflow(
       log.info('No patch to apply', { workflowId, rootCause });
     }
 
-    // State: TEST
     currentState = WorkflowState.TEST;
     await updateWorkflowStatus({
       workflowId,
       state: currentState,
       timestamp: new Date().toISOString(),
       data: { patchApplied },
+      ...statusBase,
     });
 
     log.info('Workflow state: TEST', { workflowId });
 
-    // Emit CloudEvent for TEST state
     await emitCloudEvent({
       eventType: 'workflow.state.test',
       source: 'self-healing-ci',
@@ -244,12 +253,10 @@ export async function SelfHealingWorkflow(
       },
     });
 
-    // Run tests
     const testResult = await runTests({
       repository: input.repository,
       headSha: input.headSha,
       branch: input.branch,
-      installationId: input.installationId,
     });
 
     testsPassed = testResult.success;
@@ -261,22 +268,26 @@ export async function SelfHealingWorkflow(
         testOutput: testResult.output,
       });
 
-      // If tests fail, we might need to retry diagnosis
       if (testResult.retryDiagnosis) {
         log.info('Retrying diagnosis due to test failure', { workflowId });
 
-        // Go back to DIAGNOSE state
         currentState = WorkflowState.DIAGNOSE;
         await updateWorkflowStatus({
           workflowId,
           state: currentState,
           timestamp: new Date().toISOString(),
           data: { testFailure: testResult },
+          ...statusBase,
         });
 
-        // Retry diagnosis with test failure context
         const retryDiagnosisResult = await diagnoseFailure({
-          ...input,
+          repository: input.repository,
+          workflowRunId: input.workflowRunId,
+          headSha: input.headSha,
+          branch: input.branch,
+          installationId: input.installationId,
+          actor: input.actor,
+          failureData,
           testFailure: testResult,
         });
 
@@ -284,7 +295,6 @@ export async function SelfHealingWorkflow(
           retryDiagnosisResult.rootCause !== RootCause.UNKNOWN &&
           retryDiagnosisResult.patch
         ) {
-          // Apply new patch
           const retryPatchResult = await applyPatch({
             repository: input.repository,
             headSha: input.headSha,
@@ -292,15 +302,14 @@ export async function SelfHealingWorkflow(
             patch: retryDiagnosisResult.patch,
             rootCause: retryDiagnosisResult.rootCause,
             installationId: input.installationId,
+            workflowRunId: input.workflowRunId,
           });
 
           if (retryPatchResult.success) {
-            // Run tests again
             const retryTestResult = await runTests({
               repository: input.repository,
               headSha: input.headSha,
               branch: input.branch,
-              installationId: input.installationId,
             });
 
             testsPassed = retryTestResult.success;
@@ -311,18 +320,17 @@ export async function SelfHealingWorkflow(
       log.info('Tests passed after patch', { workflowId });
     }
 
-    // State: PROVE
     currentState = WorkflowState.PROVE;
     await updateWorkflowStatus({
       workflowId,
       state: currentState,
       timestamp: new Date().toISOString(),
       data: { testsPassed },
+      ...statusBase,
     });
 
     log.info('Workflow state: PROVE', { workflowId });
 
-    // Emit CloudEvent for PROVE state
     await emitCloudEvent({
       eventType: 'workflow.state.prove',
       source: 'self-healing-ci',
@@ -337,13 +345,12 @@ export async function SelfHealingWorkflow(
       },
     });
 
-    // Validate proofs if tests passed
     if (testsPassed) {
       const proofResult = await validateProofs({
         repository: input.repository,
         headSha: input.headSha,
         branch: input.branch,
-        installationId: input.installationId,
+        proofFiles: [],
       });
 
       proofsValidated = proofResult.success;
@@ -362,18 +369,17 @@ export async function SelfHealingWorkflow(
       });
     }
 
-    // State: MERGE
     currentState = WorkflowState.MERGE;
     await updateWorkflowStatus({
       workflowId,
       state: currentState,
       timestamp: new Date().toISOString(),
       data: { testsPassed, proofsValidated },
+      ...statusBase,
     });
 
     log.info('Workflow state: MERGE', { workflowId });
 
-    // Emit CloudEvent for MERGE state
     await emitCloudEvent({
       eventType: 'workflow.state.merge',
       source: 'self-healing-ci',
@@ -389,39 +395,30 @@ export async function SelfHealingWorkflow(
       },
     });
 
-    // Merge changes if everything passed
     if (testsPassed && proofsValidated) {
-      // Parse repository to get owner and repo name
-      const [owner, repo] = input.repository.split('/');
-
       const mergeResult = await mergeChanges({
-        owner,
-        repo,
+        repository: input.repository,
+        installationId: input.installationId,
         baseBranch: input.branch,
-        headBranch: `ci/self-heal/${input.headSha.substring(0, 7)}`,
-        title: `fix: Self-healing CI automated fix for ${
-          rootCause || 'unknown issue'
-        }`,
-        body: `Automated fix applied by Self-Healing CI system.\n\nRoot cause: ${rootCause}\nPatch applied: ${patchApplied}\nTests passed: ${testsPassed}\nProofs validated: ${proofsValidated}`,
-        rootCauseEnum: rootCause || 'UNKNOWN',
-        proofVerdict: proofsValidated ? 'PASS' : 'FAIL',
-        commitSha: input.headSha,
-        appId: process.env.GITHUB_APP_ID || '',
-        privateKey: process.env.GITHUB_APP_PRIVATE_KEY || '',
-        webhookSecret: process.env.GITHUB_WEBHOOK_SECRET || '',
+        headBranch: healingBranch,
+        title: `fix(ci): self-healing for ${rootCause || 'unknown issue'}`,
+        body: `Automated fix from Self-Healing CI.\n\n- Root cause: ${String(rootCause)}\n- Patch applied: ${patchApplied}\n- Tests passed: ${testsPassed}\n- Proofs: ${proofsValidated}`,
       });
 
-      merged = mergeResult.success;
-
-      if (!merged) {
-        throw new Error(`Failed to merge changes: ${mergeResult.error}`);
+      if (!mergeResult.success) {
+        throw new Error(
+          `Failed to merge changes: ${mergeResult.error || 'unknown'}`
+        );
       }
 
-      log.info('Changes merged successfully', {
+      merged = mergeResult.merged === true;
+
+      log.info('Merge step finished', {
         workflowId,
         mergeCommitSha: mergeResult.mergeCommitSha,
         prNumber: mergeResult.prNumber,
-        branchDeleted: mergeResult.branchDeleted,
+        skipped: mergeResult.skipped,
+        merged,
       });
     } else {
       log.info('Skipping merge due to test or proof failure', {
@@ -431,18 +428,17 @@ export async function SelfHealingWorkflow(
       });
     }
 
-    // State: DONE
     currentState = WorkflowState.DONE;
     await updateWorkflowStatus({
       workflowId,
       state: currentState,
       timestamp: new Date().toISOString(),
       data: { testsPassed, proofsValidated, merged },
+      ...statusBase,
     });
 
     log.info('Workflow state: DONE', { workflowId });
 
-    // Emit CloudEvent for DONE state
     await emitCloudEvent({
       eventType: 'workflow.state.done',
       source: 'self-healing-ci',
@@ -459,7 +455,6 @@ export async function SelfHealingWorkflow(
       },
     });
   } catch (err) {
-    // State: FAILED
     currentState = WorkflowState.FAILED;
     error = err instanceof Error ? err.message : 'Unknown error';
 
@@ -468,6 +463,7 @@ export async function SelfHealingWorkflow(
       state: currentState,
       timestamp: new Date().toISOString(),
       data: { error },
+      ...statusBase,
     });
 
     log.error('Workflow failed', {
@@ -476,7 +472,6 @@ export async function SelfHealingWorkflow(
       state: currentState,
     });
 
-    // Emit CloudEvent for FAILED state
     await emitCloudEvent({
       eventType: 'workflow.state.failed',
       source: 'self-healing-ci',

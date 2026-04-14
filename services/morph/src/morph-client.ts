@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { execa } from 'execa';
 import { simpleGit, SimpleGit } from 'simple-git';
-import { logger } from '../../github-app/src/utils/logger.js';
+import { logger } from './logger.js';
 import {
   CompilationResult,
   CompilationValidator,
@@ -303,31 +303,27 @@ export class MorphClient {
       language: compilationResult.language,
     });
 
-    // If we haven't exceeded max retries, retry with compiler diagnostics
-    if (request.maxRetries > 0) {
-      const retryRequest = {
-        ...request,
-        maxRetries: request.maxRetries - 1,
-        compilationErrors: compilationResult.errors,
-        previousAttempts: (request as any).previousAttempts || 0 + 1,
-      };
+    const previousAttempts =
+      (request as { previousAttempts?: number }).previousAttempts ?? 0;
+    const hint =
+      'Compilation failed after applying the patch. Re-run diagnosis with the compilationErrors field so the model can propose a corrected diff. Automatic Morph-side retries require orchestration (Claude loop), not a silent re-apply of the same patch.';
 
-      logger.info('Retrying patch with compiler diagnostics', {
-        repository: request.repository,
-        remainingRetries: retryRequest.maxRetries,
-        compilationErrors: compilationResult.errors,
-      });
-
-      // TODO: Implement retry with enhanced context
-      // This would involve sending the compilation errors back to Claude
-      // for a refined patch, then retrying the application
-    }
+    logger.info('Compilation failure recorded for orchestrator', {
+      repository: request.repository,
+      remainingMorphRetries: request.maxRetries,
+      previousAttempts,
+      compilationErrors: compilationResult.errors,
+    });
 
     return {
       success: false,
+      filesChanged: [],
       compilationErrors: compilationResult.errors,
+      validationErrors: [],
       duration: Date.now() - startTime,
-      retryCount: (request as any).previousAttempts || 0,
+      retryCount: previousAttempts,
+      orchestratorHint: hint,
+      error: compilationResult.errors[0] ?? 'Compilation failed after patch',
     };
   }
 
@@ -436,7 +432,7 @@ export class MorphClient {
     patch: string,
     workspacePath: string
   ): Promise<void> {
-    const { stdout, stderr } = await execa('git', ['apply'], {
+    const { stderr } = await execa('git', ['apply'], {
       cwd: workspacePath,
       input: patch,
     });

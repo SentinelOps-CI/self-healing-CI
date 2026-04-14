@@ -1,4 +1,5 @@
 import { log } from '@temporalio/activity';
+import { sendCloudEvent } from '../services/cloud-events.js';
 import { logger } from '../utils/logger.js';
 
 export interface EmitCloudEventInput {
@@ -15,36 +16,40 @@ export interface EmitCloudEventResult {
 }
 
 /**
- * Activity to emit cloud events
+ * Activity to emit CloudEvents (structured log + optional HTTP ingest).
  */
 export async function emitCloudEvent(
   input: EmitCloudEventInput
 ): Promise<EmitCloudEventResult> {
   const startTime = Date.now();
-  const activityId = log.info('Emitting cloud event', {
+  log.info('Emitting cloud event', {
     eventType: input.eventType,
     source: input.source,
     subject: input.subject,
   });
 
   try {
-    // TODO: Implement actual cloud event emission
-    // For now, just log the event
-    logger.info('Cloud event emitted', {
-      activityId,
-      eventType: input.eventType,
+    const result = await sendCloudEvent({
+      type: input.eventType,
       source: input.source,
       subject: input.subject,
+      data: input.eventData,
+    });
+
+    logger.info('Cloud event activity completed', {
+      eventType: input.eventType,
+      eventId: result.eventId,
+      success: result.success,
       duration: Date.now() - startTime,
     });
 
     return {
-      success: true,
-      eventId: `event-${Date.now()}`,
+      success: result.success,
+      eventId: result.eventId,
+      error: result.error,
     };
   } catch (error) {
-    logger.error('Cloud event emission failed', {
-      activityId,
+    logger.error('Cloud event activity failed', {
       eventType: input.eventType,
       error: error instanceof Error ? error.message : 'Unknown error',
       duration: Date.now() - startTime,

@@ -41,6 +41,8 @@ export const TestExecutionRequestSchema = z.object({
   headSha: z.string(),
   branch: z.string(),
   testSuite: z.string(),
+  /** When set, runs `sh -c "<command>"` in the container (overrides suite command). */
+  customShellCommand: z.string().optional(),
   containerConfig: TestContainerConfigSchema,
   installationId: z.number(),
   retryCount: z.number().default(3),
@@ -53,7 +55,7 @@ export type TestExecutionRequest = z.infer<typeof TestExecutionRequestSchema>;
  * Test execution result schema
  */
 export const TestExecutionResultSchema = z.object({
-  success: boolean,
+  success: z.boolean(),
   testResults: z.array(
     z.object({
       name: z.string(),

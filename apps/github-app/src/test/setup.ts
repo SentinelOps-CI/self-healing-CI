@@ -2,8 +2,13 @@ import { jest } from '@jest/globals';
 
 // Global test setup
 beforeAll(() => {
-  // Set up any global test configuration
-  (process.env as any).NODE_ENV = 'test';
+  process.env['NODE_ENV'] = 'test';
+  process.env['GITHUB_APP_ID'] = process.env['GITHUB_APP_ID'] || '123456';
+  process.env['GITHUB_PRIVATE_KEY'] =
+    process.env['GITHUB_PRIVATE_KEY'] ||
+    '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----\n';
+  process.env['GITHUB_WEBHOOK_SECRET'] =
+    process.env['GITHUB_WEBHOOK_SECRET'] || '0123456789abcdef';
 });
 
 afterAll(() => {
