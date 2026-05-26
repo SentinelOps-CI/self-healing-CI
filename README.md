@@ -1,6 +1,17 @@
 <div align="center">
 
-# Self-Healing CI
+<pre>
+#################################################################################################
+#                                                                                               #
+#              ____       _  __   _   _            _ _                ____ ___                  #
+#             / ___|  ___| |/ _| | | | | ___  __ _| (_)_ __   __ _   / ___|_ _|                 #
+#             \___ \ / _ \ | |_  | |_| |/ _ \/ _` | | | '_ \ / _` | | |    | |                  #
+#              ___) |  __/ |  _| |  _  |  __/ (_| | | | | | | (_| | | |___ | |                  #
+#             |____/ \___|_|_|   |_| |_|\___|\__,_|_|_|_| |_|\__, |  \____|___|                 #
+#                                                             |___/                             #
+#                                                                                               #
+#################################################################################################
+</pre>
 
 **React to broken CI with context, diagnosis, and an automated fix path** — a GitHub App plus Temporal worker that collects failure data, asks Claude for a root cause and patch, applies changes via GitHub or Morph, runs tests and optional proof checks, then updates status or merges when your policy allows.
 
